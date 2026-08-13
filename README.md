@@ -13,9 +13,9 @@ LMS, SIS, roster, or sign-on systems.
   temporary evidence groups and a teacher-reviewed responsive lesson.
 - Local teacher observation capture using device storage.
 - Portable roster CSV import and evidence CSV export.
-- A Canvas-ready JSON lesson package.
-- Explicit adapter contracts for Canvas, Infinite Campus, Clever, ClassLink,
-  and OneRoster/CSV.
+- A portable Chalkline lesson JSON package used as the Canvas handoff fallback.
+- Executable, dependency-injected connectors for Canvas REST, Clever Data API,
+  ClassLink OneRoster, Infinite Campus CSV handoff, and portable OneRoster/CSV.
 - Visible teacher release gates before assignments, grades, or records leave
   the workspace.
 
@@ -68,3 +68,8 @@ Plugin metadata lives in `lib/plugins/registry.ts`. Every plugin declares:
 
 The product rule is: **read broadly, write narrowly, release deliberately**.
 
+Credentialed connector code lives under `lib/plugins/connectors/`. It is kept
+out of the browser bundle, accepts a narrow injected HTTP client for testing,
+requires HTTPS, bounds provider error text, and creates Canvas assignments as
+unpublished. Mock-backed contract tests verify the exact regional integration
+paths without inventing a live district connection.

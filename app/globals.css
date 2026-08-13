@@ -261,6 +261,8 @@ button.orbit-label:hover { transform: scale(1.07); }
 .drawer-close { position: absolute; top: 21px; right: 21px; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); cursor: pointer; font-size: 22px; }
 .plugin-drawer h2 { font-family: Georgia, serif; font-size: 38px; margin: 9px 0; letter-spacing: -.04em; }
 .drawer-description { color: var(--muted); font-size: 11px; line-height: 1.65; }
+.connector-note { display: flex; align-items: flex-start; gap: 8px; border: 1px solid #cbd9cc; background: #e9f0e8; color: #315b3c; border-radius: 9px; padding: 10px 11px; font-size: 9px; line-height: 1.45; }
+.connector-note i { font-style: normal; font-weight: 900; }
 .region-proof { display: grid; grid-template-columns: 54px 1fr; gap: 12px; align-items: center; padding: 15px; background: var(--teal); color: white; border-radius: 12px; margin: 22px 0; }
 .region-proof > span { font-family: Georgia, serif; color: var(--gold); font-size: 15px; font-weight: 800; }
 .region-proof p { font-size: 9px; color: #c6d7d3; line-height: 1.45; margin: 0; }

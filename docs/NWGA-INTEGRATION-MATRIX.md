@@ -4,10 +4,10 @@ Checked: 13 August 2026
 
 | Tool | Public regional evidence | Chalkline v0.1 path | Live path requirement |
 | --- | --- | --- | --- |
-| Canvas | Dalton High School's official student resources list Canvas | Teacher-reviewed lesson JSON package | District Canvas base URL plus approved LTI 1.3 registration or developer key |
-| Infinite Campus | Official Rome City teacher link; official Dalton listing; official Whitfield and Walker portals | Roster import and evidence/gradebook CSV export with preview | District-approved Campus integration and exact data-exchange scope |
-| Clever | Official Dalton listing and Walker school portal listing | OneRoster/CSV fallback | District Clever app approval and scoped roster permissions |
-| ClassLink | Official Whitfield Infinite Campus portal offers ClassLink SSO | OneRoster/CSV fallback | District ClassLink assignment, SSO configuration, and OneRoster scope |
+| Canvas | Dalton High School's official student resources list Canvas | Executable REST connector for teacher courses and unpublished assignment creation; JSON fallback | District Canvas base URL plus approved OAuth/developer key or LTI 1.3 registration |
+| Infinite Campus | Official Rome City teacher link; official Dalton listing; official Whitfield and Walker portals | Executable tolerant roster CSV import and evidence/gradebook CSV export | District-approved Campus integration and exact data-exchange scope for direct API exchange |
+| Clever | Official Dalton listing and Walker school portal listing | Executable Data API v3 section and role-filtered student connector; CSV fallback | District Clever app approval and scoped roster permissions |
+| ClassLink | Official Whitfield Infinite Campus portal offers ClassLink SSO | Executable district-scoped OneRoster class/student connector; CSV fallback | District ClassLink assignment, SSO configuration, and OneRoster scope |
 | OneRoster/CSV | Portable interoperability path | Works locally now | Column mapping and district data-governance approval for real records |
 
 ## Product claim boundary
@@ -23,6 +23,12 @@ production credential, or permission to process student records.
 - Whitfield County Schools Campus portal: <https://campus.whitfield.k12.ga.us/campus/portal/students/whitfield.jsp>
 - Walker County / LaFayette Middle student resources: <https://lms.walkerschools.org/students>
 - Walker County Campus portal: <https://campus.walkerschools.org/campus/portal/parents/walker.jsp>
+- Canvas LMS API: <https://developerdocs.instructure.com/services/canvas>
+- Canvas Assignments API: <https://developerdocs.instructure.com/services/canvas/resources/assignments>
+- Clever Data API sections: <https://dev.clever.com/docs/sections>
+- Clever API v3 changes: <https://dev.clever.com/docs/new-in-api-v3>
+- ClassLink API sandbox: <https://apisandbox.classlink.com/>
+- ClassLink Roster Server / OneRoster: <https://www.classlink.com/products/roster-server>
 
 ## Next implementation increments
 
@@ -38,4 +44,3 @@ production credential, or permission to process student records.
 6. Pilot the exit-ticket-to-tomorrow workflow against a manual baseline and
    measure time saved, teacher edit rate, unsupported claims, and post-reteach
    student performance.
-

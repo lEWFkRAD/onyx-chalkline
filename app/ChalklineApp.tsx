@@ -410,6 +410,7 @@ export function ChalklineApp() {
             <span className="section-label">{activePlugin.category} plugin</span>
             <h2>{activePlugin.name}</h2>
             <p className="drawer-description">{activePlugin.description}</p>
+            <p className="connector-note"><i>✓</i>{activePlugin.status === "ready" ? "Local adapter active in this build." : "Executable connector included and contract-tested; live exchange activates only after district authorization."}</p>
             <div className="region-proof"><span>NWGA</span><p><strong>Regional fit</strong>{activePlugin.regionNote}</p></div>
             <div className="capability-list"><span className="section-label">Plugin capabilities</span>{activePlugin.capabilities.map((capability) => <div key={capability}><i>✓</i>{capability.replace(".", " · ")}</div>)}</div>
             <div className="setup-box"><span>Setup needed</span><p>{activePlugin.setup}</p><small>Portable path: {activePlugin.fallback}</small></div>
