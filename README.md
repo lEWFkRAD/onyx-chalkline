@@ -73,3 +73,7 @@ out of the browser bundle, accepts a narrow injected HTTP client for testing,
 requires HTTPS, bounds provider error text, and creates Canvas assignments as
 unpublished. Mock-backed contract tests verify the exact regional integration
 paths without inventing a live district connection.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
