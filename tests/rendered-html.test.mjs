@@ -2,6 +2,15 @@ import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 
+async function readDirectoryIfPresent(url) {
+  try {
+    return await readdir(url);
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
 async function render() {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
@@ -39,7 +48,10 @@ test("starter preview is removed and product metadata is installed", async () =>
   assert.match(layout, /Classroom evidence into tomorrow's lesson/);
   assert.match(packageJson, /"name": "onyx-chalkline"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
-  assert.deepEqual(await readdir(new URL("../app/_sites-preview", import.meta.url)), []);
+  assert.deepEqual(
+    await readDirectoryIfPresent(new URL("../app/_sites-preview", import.meta.url)),
+    [],
+  );
 });
 
 test("the teacher workflow includes release gates and portable integration paths", async () => {
