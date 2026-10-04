@@ -1,6 +1,6 @@
 # Onyx Chalkline
 
-Chalkline helps teachers build lessons, distribute reviewed work, and see where students ask for help.
+Chalkline is a teacher-led AI classroom app with a Hermes-based desktop that helps teachers turn lesson ideas into interactive HTML activities, custom narrated videos, and assigned practice. Teachers review and publish lessons, while students use a connected workspace to explore explanations, ask lesson-specific AI questions, complete work, and receive feedback. Teachers can review those questions and replies alongside student submissions to plan follow-up instruction around where learners need support. The current release is a working local prototype using synthetic Grade 3 fractions data; school accounts and deployment across student devices are planned next.
 
 Two runnable prototypes live here:
 
