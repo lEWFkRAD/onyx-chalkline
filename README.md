@@ -1,79 +1,71 @@
 # Onyx Chalkline
 
-Chalkline is a teacher-controlled classroom evidence system. It turns everyday
-student work and teacher observations into a source-linked picture of learning,
-then helps the teacher prepare the next lesson without replacing the district's
-LMS, SIS, roster, or sign-on systems.
+Chalkline helps teachers build lessons, distribute reviewed work, and see where students ask for help.
 
-## Current product slice
+Two runnable prototypes live here:
 
-- A custom responsive teacher workspace with Today, Plan, Evidence, Students,
-  and Integrations views.
-- A complete synthetic Grade 3 mathematics workflow from 18 exit tickets to
-  temporary evidence groups and a teacher-reviewed responsive lesson.
-- Local teacher observation capture using device storage.
-- Portable roster CSV import and evidence CSV export.
-- A portable Chalkline lesson JSON package used as the Canvas handoff fallback.
-- Executable, dependency-injected connectors for Canvas REST, Clever Data API,
-  ClassLink OneRoster, Infinite Campus CSV handoff, and portable OneRoster/CSV.
-- Visible teacher release gates before assignments, grades, or records leave
-  the workspace.
+| App | What it does | Start |
+| --- | --- | --- |
+| **Connected classroom** | Teacher Lesson Studio, interactive fraction lessons, narrated videos, student assignments and AI help, teacher question review and feedback | `cd classroom && node server.mjs` |
+| **Teacher evidence workspace** | Synthetic evidence groups, local observations, lesson planning and CSV/JSON handoffs | `npm ci && npm run dev` |
 
-## Northwest Georgia integration baseline
+**Current scope: synthetic demonstration data only.** The connected classroom has one teacher and four fictional learners, runs on one computer, and currently teaches Grade 3 unit fractions. Real student accounts and school-device distribution are future work.
 
-The starter pack is based on public district evidence checked on 13 August
-2026:
+## Connected teacher and student workflow
 
-- Dalton Public Schools publicly lists Canvas, Clever, and Infinite Campus.
-- Rome City Schools publicly provides Infinite Campus teacher access.
-- Whitfield County's Infinite Campus portal exposes ClassLink SSO.
-- Walker County Schools publicly exposes Infinite Campus and Clever.
+1. Edit a lesson, quiz and narration script, or ask your configured model to draft a new theme.
+2. Preview the interactive HTML lesson. On Windows, render a narrated MP4 with captions and a transcript.
+3. Review the saved version, choose learners, a due date and the allowed help level, then assign it.
+4. Students open their individual demo links, explore the lesson, ask for help, save work and submit answers.
+5. Teachers review exact questions and replies, work and submissions, send feedback, and draft follow-up teaching.
 
-These references establish regional product fit. They do **not** establish a
-vendor partnership, district approval, or live connection. Live Canvas, Clever,
-ClassLink, or Infinite Campus access requires the applicable district and vendor
-authorization. Chalkline therefore ships a working portable CSV/JSON path while
-those approvals are pursued.
+Published lessons are immutable snapshots. Private teacher notes and answer keys stay out of student APIs and model context. Students can see that their teacher receives lesson questions. Topic grouping uses simple keyword rules; it does not diagnose or grade children.
 
-## Data boundary
+![Teacher classroom overview](docs/connected-classroom.png)
 
-The current build contains synthetic classroom data only. Roster files and
-teacher notes stay in the browser on the current device. This is a prototype,
-not an approved system for FERPA-protected education records. A district pilot
-needs approved identity, storage, retention, audit, accessibility, security,
-and data-governance controls before real student information is introduced.
+![Student lesson and help](docs/student-lesson.png)
 
-## Local development
+### Try it
 
-Requires Node.js 22.13 or newer.
+Requires Node.js 22.16+ (Node 24 recommended). No dependency installation is needed to run the classroom:
 
-```powershell
-npm install
-npm run dev
-npm test
+```sh
+git clone https://github.com/lEWFkRAD/onyx-chalkline.git
+cd onyx-chalkline/classroom
+node server.mjs
 ```
 
-`npm test` creates the production build, verifies server-rendered product
-content, checks the teacher release boundary, validates the regional plugin
-registry, and exercises CSV import/export behavior.
+Open the private `teacherUrl` in the generated `classroom/data/launch.json`. Windows users can instead run `./Start-Classroom.ps1` from the classroom directory. Get each student's link from the teacher view. These links work only on the same computer.
 
-## Plugin contract
+See the **[classroom setup and operating guide](classroom/README.md)** for optional AI configuration, Windows narration requirements, tests, access boundaries and limitations. Keep generated access links, databases, provider credentials and configuration private.
 
-Plugin metadata lives in `lib/plugins/registry.ts`. Every plugin declares:
+## Hermes desktop edition
 
-- the narrow capabilities it needs;
-- whether it works now, uses a file handoff, or needs district setup;
-- the administrator setup required for a live connection;
-- a portable fallback that keeps teachers moving without fake connectivity.
+The teacher desktop has been brought to Hermes upstream snapshot `16bc0b6b94be7435cb63ed30923fbc7edd53f4c5` and includes a Connected classroom tab. Its separate app identity and `chalkline://` links are preserved.
 
-The product rule is: **read broadly, write narrowly, release deliberately**.
+[Native Chalkline source and build guide](https://github.com/lEWFkRAD/hermes-agent/blob/codex/chalkline-public-20261003/CHALKLINE.md) lives on a dedicated branch of the user-owned Hermes fork. The classroom service in this repository can also run independently of Hermes. No prebuilt desktop installer is included in this update.
 
-Credentialed connector code lives under `lib/plugins/connectors/`. It is kept
-out of the browser bundle, accepts a narrow injected HTTP client for testing,
-requires HTTPS, bounds provider error text, and creates Canvas assignments as
-unpublished. Mock-backed contract tests verify the exact regional integration
-paths without inventing a live district connection.
+## Existing teacher evidence workspace
+
+The original web app remains at the repository root. It includes Today, Plan, Evidence, Students and Integrations views with synthetic Grade 3 mathematics data. Observations are stored in the browser; roster CSV parsing does not replace the displayed demo roster. CSV evidence and lesson JSON are local exports.
+
+```sh
+npm ci
+npm run dev
+npm test
+npm run lint
+```
+
+The workspace requires Node 22.13+. The connected classroom is a separate application and data store; it does not yet synchronize with the original evidence demo.
+
+## Integration starter pack
+
+Canvas, Clever and ClassLink connectors have mock-backed contract tests. Infinite Campus and OneRoster use CSV/file handoffs. They are not wired to a live district tenant. See the [integration matrix](docs/NWGA-INTEGRATION-MATRIX.md) for capabilities and setup assumptions. Vendor and district names do not imply endorsement or authorization.
+
+## Before a school pilot
+
+Cross-device hosting, district identity, class/tenant authorization, retention/deletion, encrypted operations, accessibility and model/pedagogical evaluation remain necessary. This prototype is not approved for real student records. Teacher-controlled review remains central to the workflow.
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
+Licensed under [Apache-2.0](LICENSE). The separate Hermes-derived native repository retains its own upstream license and notices.

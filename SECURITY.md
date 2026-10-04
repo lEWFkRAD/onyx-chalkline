@@ -22,3 +22,7 @@ This repository contains synthetic classroom data only. It is not approved for
 FERPA-protected student records. Production use requires district-approved
 identity, storage, retention, audit, accessibility, and data-governance
 controls.
+
+## Connected classroom demo
+
+The classroom service is loopback-only and uses reusable demo access links. Keep its ignored data directory, access/launch files, SQLite database, media, logs and provider configuration out of public issues and commits. It is not a production identity or student-record system.
