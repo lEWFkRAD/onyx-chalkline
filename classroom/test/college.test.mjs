@@ -123,3 +123,15 @@ test('college tutoring preserves supplied readings and supports academic follow-
   const follow=followupLesson({lesson:l},[{question:'What counts as evidence?'}])
   assert.equal(follow.kind,l.kind);assert.deepEqual(follow.readings,l.readings);assert.match(follow.teacherNotes,/What counts/)
 })
+
+test('incomplete AI output is rejected so a learner receives a complete saved hint',async()=>{
+  const {createServer}=await import('node:http')
+  const server=createServer((req,res)=>{res.setHeader('Content-Type','application/json');res.end(JSON.stringify({choices:[{finish_reason:'length',message:{content:'This is a cut off explanation'}}]}))})
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve))
+  try{
+    const tutor=new Tutor({baseUrl:'http://127.0.0.1:'+server.address().port,model:'synthetic-test'},{edition:'college'})
+    const result=await tutor.help({lesson:seedCollegeLesson,mode:'hints'},'What could explain this pattern?')
+    assert.equal(result.engine,'saved-hint')
+    assert.ok(!result.reply.includes('cut off'));assert.match(result.reply,/saved for your instructor/)
+  }finally{await new Promise(resolve=>server.close(resolve))}
+})
