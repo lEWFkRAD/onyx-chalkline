@@ -44,7 +44,7 @@ Install pinned runtime dependencies before starting a new release:
 
 Back up and stop the old service before switching its source directory. Install dependencies into the new release directory, not underneath a running service. API version 2 remains compatible; the source/plan tables are additive. The native desktop can use the updated school browser service without a new renderer build.
 
-AI drafting requires the configured model. If a response is unavailable, truncated or invalid, the source remains saved and the UI reports the failure; it does not label a canned plan as AI output.
+AI drafting requires the configured model. If a response is unavailable, truncated or invalid, the source remains saved and the UI reports the failure; it does not label a canned plan as AI output. **Start an editable outline** creates a clearly labeled manual outline from the reviewed source selection. Teachers can fill and save that plan without an available AI service.
 
 ## Verification
 

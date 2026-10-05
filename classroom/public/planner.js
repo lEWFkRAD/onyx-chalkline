@@ -72,7 +72,7 @@ export function createPlanner({api,upload,notice,getClassId,getEdition,runBusy=t
       (model.file?'<small>Selected: '+E(model.file.name)+'</small>':'')+field('title','Source title',model.uploadTitle,false,'required maxlength="160"')+field('publisher','Publisher / author',model.publisher,false,'maxlength="160"')+
       '<p><small>PDF, DOCX, TXT or Markdown · 8 MB per file · up to 60 PDF pages · '+model.sources.length+'/24 sources in this '+(getEdition()==='college'?'course':'class')+'. Upload material you are permitted to use.</small></p><button>Upload and extract text</button></form></section><section class="panel"><h2>2. Select and review sources</h2><p>Select up to three. Check the extracted text and warnings.</p>'+sources()+'</section></div>'+
       '<aside><section class="panel"><h2>3. Draft around your sources</h2><form id="planner-generate"><p>'+model.selected.length+' sources selected.</p>'+field('audience','Audience / level',p.audience,false,'required maxlength="160"')+field('durationMinutes','Lesson duration in minutes',p.durationMinutes,false,'type="number" min="5" max="240" required')+
-      field('brief','Learning goals, standards and student needs',p.brief,true,'required maxlength="3000"')+'<label class="check"><input type="checkbox" name="reviewed" required '+(p.reviewed?'checked':'')+'>I reviewed the extracted text of the selected sources.</label><button '+(model.selected.length?'':'disabled')+'>Draft lesson plan</button><p><small>Drafting can take up to two minutes. AI uses the first 8,000 characters per source, up to 24,000 total. Review its plan and references before saving. Direct publisher account connections are not included.</small></p></form></section></aside></div>'+editor()+'</fieldset>'
+      field('brief','Learning goals, standards and student needs',p.brief,true,'required maxlength="3000"')+'<label class="check"><input type="checkbox" name="reviewed" required '+(p.reviewed?'checked':'')+'>I reviewed the extracted text of the selected sources.</label><button '+(model.selected.length?'':'disabled')+'>Draft lesson plan</button>'+button('manual-plan','Start an editable outline',model.selected.length?'':'disabled')+'<p><small>Drafting can take up to two minutes. AI uses the first 8,000 characters per source, up to 24,000 total. Review its plan and references before saving. Direct publisher account connections are not included.</small></p></form></section></aside></div>'+editor()+'</fieldset>'
   }
   function collect(form) {
     const d=new FormData(form)
@@ -122,6 +122,17 @@ export function createPlanner({api,upload,notice,getClassId,getEdition,runBusy=t
     event.preventDefault();event.stopPropagation()
     await run(async()=>{
       const a=b.dataset.plannerAction
+      if(a==='manual-plan'){
+        // run() disables controls, so use the captured prompt and selected sources here.
+        if(!model.selected.length||!model.prompt.reviewed||!model.prompt.audience.trim()||!model.prompt.brief.trim())throw Error('Select and review sources, then enter an audience and learning goals.')
+        if(model.dirty&&!confirm('Replace your unsaved plan with a manual outline?'))return
+        const minutes=Number(model.prompt.durationMinutes)
+        if(!Number.isInteger(minutes)||minutes<5||minutes>240)throw Error('Choose 5 to 240 lesson minutes.')
+        for(const id of model.selected)await detail(id)
+        const first=model.full[model.selected[0]],warm=Math.max(1,Math.floor(minutes/6)),exit=Math.max(1,Math.floor(minutes/6))
+        model.plan={title:('Plan: '+first.title).slice(0,160),audience:model.prompt.audience,durationMinutes:minutes,objectives:[''],materials:[],steps:[{label:'Warm-up',minutes:warm,activity:'',sourceRefs:[]},{label:'Teach and practice',minutes:minutes-warm-exit,activity:'',sourceRefs:[first.id+':'+first.pages[0].label]},{label:'Check understanding',minutes:exit,activity:'',sourceRefs:[]}],differentiation:'',assessment:'',homework:'',teacherNotes:'Manual outline. Complete and review each activity and source reference.',sourceIds:[...model.selected]}
+        model.dirty=true;notice('Manual outline ready. Fill in the objectives, activities and assessment; AI was not used.')
+      }
       if(a==='review-source'){await detail(b.dataset.id);model.open=b.dataset.id}
       if(a==='delete-source'){
         if(model.plan?.sourceIds.includes(b.dataset.id))throw Error('This draft uses that source. Clear the plan before deleting its source.')

@@ -70,6 +70,13 @@ try{
       await page.screenshot({path:fileURLToPath(new URL('../artifacts/source-planner-'+edition+'-mobile.png',import.meta.url))})
       await page.getByRole('button',{name:'Clear saved plan',exact:true}).click()
       await expect(page.locator('#planner-edit')).toHaveCount(0)
+      await page.getByLabel('Original test guide',{exact:true}).check()
+      await generate.getByLabel('Audience / level').fill('Grade 4')
+      await generate.getByLabel('Learning goals, standards and student needs').fill('A manually authored lesson while AI is unavailable.')
+      await generate.getByRole('checkbox').check()
+      await page.getByRole('button',{name:'Start an editable outline',exact:true}).click()
+      await expect(page.getByRole('textbox',{name:'Private teaching notes',exact:true})).toContainText('Manual outline')
+      await page.getByRole('button',{name:'Clear saved plan',exact:true}).click()
       await page.getByRole('button',{name:'Delete source',exact:true}).click()
       await expect(page.getByLabel('Original test guide',{exact:true})).toHaveCount(0)
     }finally{await context.close();await app.close();assert.ok(resolve(dir).startsWith(resolve(tmpdir())+sep));assert.match(dir.slice(resolve(tmpdir()).length+1),/^chalkline-planner-browser-[^\\/]+$/);await rm(dir,{recursive:true,force:true})}
