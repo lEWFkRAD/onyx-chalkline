@@ -1,18 +1,22 @@
 {
   "name": "chalkline-classroom",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "engines": {
-    "node": ">=22.16.0"
+    "node": ">=24.11.0"
   },
   "scripts": {
     "start": "node server.mjs",
     "test": "node --test test/*.test.mjs",
     "test:browser": "node test/browser-check.mjs",
-    "test:media": "node test/media-check.mjs"
+    "test:media": "node test/media-check.mjs",
+    "backup": "node maintenance.mjs backup",
+    "restore": "node maintenance.mjs restore",
+    "validate:backup": "node maintenance.mjs validate"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1"
-  }
+  },
+  "chalklineApiVersion": 2
 }

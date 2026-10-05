@@ -1,98 +1,172 @@
 import { chromium, expect } from '@playwright/test'
-import { fileURLToPath } from 'node:url'
-import { mkdtemp, rm, mkdir } from 'node:fs/promises'
+import assert from 'node:assert/strict'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import { createClassroom } from '../server.mjs'
 import { Tutor } from '../tutor.mjs'
-const dir = await mkdtemp(join(tmpdir(), 'chalkline-browser-')),
-  app = createClassroom({ dataDir: dir, tutor: new Tutor() })
+const dir = await mkdtemp(join(tmpdir(), 'chalkline-browser-v2-'))
+const app = createClassroom({ dataDir: dir, tutor: new Tutor() })
 const origin = await app.listen(0)
 await mkdir(new URL('../artifacts/', import.meta.url), { recursive: true })
 const browser = await chromium.launch({ headless: true })
 const errors = []
-try {
-  const teacher = await browser.newPage({ viewport: { width: 1440, height: 1050 } })
-  teacher.on('pageerror', e => errors.push(e.message))
-  await teacher.goto(origin + '/#access=' + app.store.access.teacher)
-  await teacher.getByRole('heading', { name: 'Every question opens a door.' }).waitFor()
-  await teacher.screenshot({
-    path: fileURLToPath(new URL('../artifacts/teacher-classroom.png', import.meta.url))
+const page = async (width = 1440, height = 1050) => {
+  const p = await browser.newPage({ viewport: { width, height } })
+  p.on('pageerror', e => errors.push(e.message))
+  return p
+}
+const login = async (p, credentials) => {
+  await p.goto(origin)
+  await p.getByLabel('Username', { exact: true }).fill(credentials.username)
+  await p.getByLabel('Password', { exact: true }).fill(credentials.password)
+  await p.getByRole('button', { name: 'Sign in', exact: true }).click()
+  await p.getByRole('button', { name: 'Sign out', exact: true }).waitFor()
+}
+const screenshot = (p, name) => p.screenshot({ path: fileURLToPath(new URL('../artifacts/' + name + '.png', import.meta.url)) })
+const dropCommittedResponse = async (p, path) => {
+  const requests = []
+  const matcher = '**/api/' + path
+  await p.route(matcher, async route => {
+    requests.push(route.request().postDataJSON())
+    if (requests.length === 1) {
+      const response = await route.fetch()
+      assert.equal(response.status(), 200, 'The first request must commit before its reply is dropped')
+      await route.abort('failed')
+    } else await route.continue()
   })
+  return { requests, stop: () => p.unroute(matcher) }
+}
+try {
+  const teacher = await page()
+  await login(teacher, app.store.bootstrap.teacher)
+  await teacher.getByRole('heading', { name: 'Every question opens a door.' }).waitFor()
+  await teacher.getByRole('button', { name: 'Class & people', exact: true }).click()
+  await teacher.getByLabel('Class name', { exact: true }).fill('Grade 3 · Maple')
+  await teacher.getByRole('button', { name: 'Create class', exact: true }).click()
+  await expect(teacher.locator('#class-select option:checked')).toHaveText('Grade 3 · Maple')
+  const classId = await teacher.locator('#class-select').inputValue()
+  await teacher.getByLabel('Student name', { exact: true }).fill('Nora Demo')
+  await teacher.getByLabel('Student username', { exact: true }).fill('nora.demo')
+  await teacher.getByRole('button', { name: 'Create student sign-in', exact: true }).click()
+  const nora = { username: await teacher.locator('#new-username').inputValue(), password: await teacher.locator('#new-password').inputValue() }
+  assert.ok(nora.password.length >= 12)
+  await teacher.getByRole('button', { name: 'I have saved these details', exact: true }).click()
+  await expect(teacher.locator('#new-password')).toHaveCount(0)
+  await teacher.getByRole('button', { name: 'Classroom', exact: true }).click()
+  await screenshot(teacher, 'teacher-classroom')
   await teacher.getByRole('button', { name: 'Lesson Studio', exact: true }).click()
   await teacher.getByLabel('Title', { exact: true }).fill('A garden shared fairly')
   await teacher.getByRole('button', { name: 'Save lesson', exact: true }).click()
-  await expect(teacher.locator('#save-status')).toContainText('Saved version 2')
+  await expect(teacher.locator('#save-status')).toContainText('Saved version')
   await teacher.getByRole('button', { name: 'Preview saved lesson', exact: true }).click()
   const frame = teacher.frameLocator('iframe.preview')
   await frame.getByRole('slider').fill('8')
   await frame.getByRole('button', { name: 'Compare the pieces' }).click()
   await expect(frame.locator('#result')).toContainText('smaller than')
-  await teacher.screenshot({
-    path: fileURLToPath(new URL('../artifacts/teacher-studio.png', import.meta.url))
-  })
+  await screenshot(teacher, 'teacher-studio')
   await teacher.getByLabel('I reviewed this saved lesson', { exact: false }).check()
+  const publishRetry = await dropCommittedResponse(teacher, 'publish')
   await teacher.getByRole('button', { name: 'Assign lesson', exact: true }).click()
+  await teacher.getByRole('button', { name: 'Retry assignment', exact: true }).click()
   await teacher.getByRole('heading', { name: 'From lesson to learning.' }).waitFor()
-  const maya = app.store.access.students[0]
-  const student = await browser.newPage({ viewport: { width: 1366, height: 1000 } })
-  student.on('pageerror', e => errors.push(e.message))
-  await student.goto(origin + '/#access=' + maya.token)
+  assert.equal(publishRetry.requests.length, 2)
+  assert.equal(publishRetry.requests[0].requestId, publishRetry.requests[1].requestId)
+  await publishRetry.stop()
+  await expect(teacher.getByRole('button', { name: 'Review', exact: true })).toHaveCount(1)
+  const student = await page(1366, 1000)
+  await login(student, nora)
   await student.getByRole('button', { name: 'Open lesson →', exact: true }).click()
-  await student
-    .getByLabel('How do you know?')
-    .fill('Both wholes are the same size. Four equal parts are bigger than six.')
+  const thinking = 'Both wholes are the same size. Four equal parts are bigger than six.'
+  await student.getByLabel('How do you know?').fill(thinking)
+  await expect(student.locator('#work-status')).toContainText('Kept in this browser')
+  await student.reload()
+  await student.getByRole('button', { name: 'Open lesson →', exact: true }).click()
+  await expect(student.getByLabel('How do you know?')).toHaveValue(thinking)
   await student.getByLabel('What would you like help with?').fill('Why is one sixth smaller?')
   await student.getByRole('button', { name: 'Help me understand', exact: true }).click()
   await expect(student.locator('#chatlog')).toContainText('Saved lesson hint')
-  // Asking for help must not wipe the unsaved answer.
-  await expect(student.getByLabel('How do you know?')).toHaveValue(
-    'Both wholes are the same size. Four equal parts are bigger than six.'
-  )
+  await expect(student.getByLabel('How do you know?')).toHaveValue(thinking)
   await student.getByLabel('One fourth', { exact: true }).check()
+  const progressRetry = await dropCommittedResponse(student, 'progress')
   await student.getByRole('button', { name: 'Save my progress', exact: true }).click()
-  await student.reload()
-  await student.getByRole('button', { name: 'Open lesson →', exact: true }).click()
-  await expect(student.getByLabel('How do you know?')).toHaveValue(
-    'Both wholes are the same size. Four equal parts are bigger than six.'
-  )
+  await student.getByRole('button', { name: 'Retry pending save', exact: true }).click()
+  await expect(student.locator('#work-status')).toContainText('Saved with your teacher')
+  assert.equal(progressRetry.requests.length, 2)
+  assert.equal(progressRetry.requests[0].requestId, progressRetry.requests[1].requestId)
+  await progressRetry.stop()
+  const assignmentId = progressRetry.requests[0].assignmentId
+  const studentToken = await student.evaluate(() => sessionStorage.getItem('chalkline-access'))
+  const saved = await (await fetch(origin + '/api/state', { headers: { Authorization: 'Bearer ' + studentToken } })).json()
+  assert.equal(saved.assignments[0].work[0].revision, 1)
+  const otherDevice = await page()
+  await login(otherDevice, nora)
+  await otherDevice.getByRole('button', { name: 'Open lesson →', exact: true }).click()
+  await otherDevice.getByLabel('How do you know?').fill('My newer explanation from another device.')
+  await otherDevice.getByRole('button', { name: 'Save my progress', exact: true }).click()
+  await expect(otherDevice.locator('#work-status')).toContainText('Saved with your teacher')
+  await student.getByLabel('How do you know?').fill('Keep this typed answer when another device saves.')
+  await student.getByRole('button', { name: 'Save my progress', exact: true }).click()
+  await expect(student.locator('#work-notices')).toContainText('changed in another session')
+  await expect(student.getByLabel('How do you know?')).toHaveValue('Keep this typed answer when another device saves.')
+  student.once('dialog', dialog => dialog.accept())
+  await student.getByRole('button', { name: 'Reload saved work', exact: true }).click()
+  await expect(student.getByLabel('How do you know?')).toHaveValue('My newer explanation from another device.')
+  await student.getByLabel('How do you know?').fill(thinking)
   await student.getByRole('button', { name: 'Turn in my work', exact: true }).click()
   await expect(student.getByText('Your work is turned in.', { exact: false }).first()).toBeVisible()
-  await student.screenshot({
-    path: fileURLToPath(new URL('../artifacts/student-lesson.png', import.meta.url))
-  })
+  await screenshot(student, 'student-lesson')
   await teacher.getByRole('button', { name: 'Refresh', exact: true }).click()
   await teacher.getByRole('button', { name: 'Review', exact: true }).click()
-  await expect(
-    teacher.getByText('Both wholes are the same size. Four equal parts are bigger than six.', { exact: false })
-  ).toBeVisible()
-  const feedback = teacher.locator('form[data-feedback="maya"]')
+  await expect(teacher.getByText('Thinking: ' + thinking, { exact: true })).toBeVisible()
+  const feedback = teacher.locator('form[data-feedback]')
   await feedback.getByLabel('Your feedback').fill('Good comparison. Draw both wholes to show your reasoning.')
   await feedback.getByRole('button', { name: 'Share feedback', exact: true }).click()
+  await expect(teacher.locator('#notice')).toContainText('Feedback shared')
   await teacher.getByRole('button', { name: 'Questions & support', exact: true }).click()
-  await teacher.getByText('Maya B. — Why is one sixth smaller?', { exact: true }).click()
+  await teacher.getByText('Nora Demo — Why is one sixth smaller?', { exact: true }).click()
   await expect(teacher.getByText('AI help is unavailable right now.', { exact: false })).toBeVisible()
-  await teacher.screenshot({
-    path: fileURLToPath(new URL('../artifacts/teacher-insights.png', import.meta.url))
-  })
+  await screenshot(teacher, 'teacher-insights')
   await teacher.getByRole('button', { name: 'Draft a follow-up lesson', exact: true }).click()
   await expect(teacher.getByLabel('Title', { exact: true })).toHaveValue(/Another look/)
+  await teacher.getByRole('button', { name: 'Save lesson', exact: true }).click()
+  await expect(teacher.locator('#save-status')).toContainText('Saved version')
+  await teacher.locator('#class-select').selectOption('demo-class')
+  await teacher.getByRole('button', { name: 'Assignments', exact: true }).click()
+  await expect(teacher.getByRole('button', { name: 'Review', exact: true })).toHaveCount(0)
+  await teacher.locator('#class-select').selectOption(classId)
+  await expect(teacher.getByRole('button', { name: 'Review', exact: true })).toHaveCount(1)
   await student.setViewportSize({ width: 390, height: 844 })
   await student.getByRole('button', { name: '← My lessons', exact: true }).click()
-  await expect(
-    student.getByText('Good comparison. Draw both wholes to show your reasoning.', { exact: false })
-  ).toBeVisible()
-  await student.screenshot({
-    path: fileURLToPath(new URL('../artifacts/student-mobile.png', import.meta.url))
-  })
-  if (await student.evaluate(() => document.documentElement.scrollWidth > innerWidth))
-    throw new Error('Mobile layout overflows.')
+  await expect(student.getByText('Good comparison. Draw both wholes to show your reasoning.', { exact: false })).toBeVisible()
+  await screenshot(student, 'student-mobile')
+  assert.equal(await student.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+  await teacher.getByRole('button', { name: 'Class & people', exact: true }).click()
+  teacher.once('dialog', dialog => dialog.accept())
+  await teacher.getByRole('button', { name: 'Reset password', exact: true }).click()
+  nora.password = await teacher.locator('#new-password').inputValue()
+  await teacher.getByRole('button', { name: 'I have saved these details', exact: true }).click()
+  await student.getByRole('button', { name: 'Check for new lessons', exact: true }).click()
+  await expect(student.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible()
+  await login(student, nora)
+  teacher.once('dialog', dialog => dialog.accept())
+  await teacher.getByRole('button', { name: 'Remove from class', exact: true }).click()
+  await expect(teacher.getByText('nora.demo · Removed from this class', { exact: true })).toBeVisible()
+  await student.reload()
+  await expect(student.getByRole('button', { name: 'See your work', exact: true })).toHaveCount(0)
+  const denied = await fetch(origin + '/api/lesson-html?assignment=' + assignmentId, { headers: { Authorization: 'Bearer ' + studentToken } })
+  assert.ok([401, 404].includes(denied.status))
+  const wrapper = join(dir, 'native-frame.html')
+  await writeFile(wrapper, '<!doctype html><html><body><iframe title="Classroom" style="width:100%;height:900px" sandbox="allow-scripts allow-same-origin allow-forms allow-downloads" allow="clipboard-write" src="' + origin + '"></iframe></body></html>')
+  const native = await page()
+  await native.goto(pathToFileURL(wrapper).href)
+  await expect(native.frameLocator('iframe').getByRole('heading', { name: 'Learning starts together.' })).toBeVisible()
   if (errors.length) throw new Error(errors.join('\n'))
-  console.log(
-    'Browser checks passed: teacher authoring, sandbox interaction, publishing, separate student session, preserved input, saved/reloaded work, submission, teacher feedback, help insight, follow-up, mobile layout.'
-  )
+  console.log('Browser checks passed: individual sign-in, class enrollment, reviewed publishing, safe retries, browser draft recovery, concurrent conflict protection, student help, submissions, feedback, follow-up, class isolation, reset/removal, mobile and native iframe.')
 } finally {
   await browser.close()
   await app.close()
+  assert.ok(resolve(dir).startsWith(resolve(tmpdir()) + sep), 'Unexpected test cleanup path')
   await rm(dir, { recursive: true, force: true })
 }

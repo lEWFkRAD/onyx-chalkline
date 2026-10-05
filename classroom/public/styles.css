@@ -613,3 +613,24 @@ progress {
     animation: none !important;
   }
 }
+
+.class-picker { min-width: 0; margin-bottom: 24px; font-size: 12px; }
+.class-picker select { font-size: 13px; }
+nav .class-picker { padding: 0 4px; }
+.student-main > .class-picker { max-width: 320px; }
+.save-status { color: var(--muted); font-size: 13px; margin-top: 18px; }
+.retry, .conflict { border-left: 3px solid var(--coral); margin-bottom: 18px; }
+.credential-card { max-width: 680px; border: 2px solid var(--accent); }
+.credential-card input { font-family: Consolas, monospace; }
+.account-panel { max-width: 600px; }
+header, .identity, .actions { flex-wrap: wrap; }
+.panel, .grid > *, .layout main { min-width: 0; }
+.row small, .notice-inline { overflow-wrap: anywhere; }
+@media (max-width: 660px) {
+  nav { flex-wrap: wrap; }
+  nav .class-picker { width: 100%; margin-bottom: 6px; }
+  nav button { flex: 0 0 auto; }
+  header { gap: 14px; }
+  .identity { width: 100%; justify-content: flex-end; }
+  .identity > span { margin-right: auto; }
+}

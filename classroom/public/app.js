@@ -4,45 +4,106 @@ const E = value =>
     /[&<>"']/g,
     c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]
   )
-let token =
-  new URLSearchParams(location.hash.slice(1)).get('access') || sessionStorage.getItem('chalkline-access') || ''
-if (location.hash) {
-  history.replaceState(null, '', location.pathname)
-}
+const incomingSession = new URLSearchParams(location.hash.slice(1)).get('access')
+let token = incomingSession || sessionStorage.getItem('chalkline-access') || ''
+if (incomingSession) sessionStorage.removeItem('chalkline-expires')
+if (location.hash) history.replaceState(null, '', location.pathname)
 if (token) sessionStorage.setItem('chalkline-access', token)
-let state,
-  tab = 'overview',
-  selected = '',
-  working = null,
-  previewed = 0,
-  dirty = false,
-  mediaTimer,
-  blobs = []
+let state, tab = 'overview', selected = '', working = null, previewed = 0, dirty = false, mediaTimer, blobs = []
+let currentClassId = '', credentials = null, expiryTimer, busyOperations = 0
 const notice = (message, error = false) => {
   const n = document.querySelector('#notice')
   n.textContent = message
   n.classList.add('visible')
   n.setAttribute('role', error ? 'alert' : 'status')
   clearTimeout(notice.timer)
-  notice.timer = setTimeout(() => n.classList.remove('visible'), 6000)
+  notice.timer = setTimeout(() => n.classList.remove('visible'), 8000)
+}
+function forgetSession() {
+  token = ''; state = null; selected = ''; currentClassId = ''; working = null; dirty = false; credentials = null
+  sessionStorage.removeItem('chalkline-access'); sessionStorage.removeItem('chalkline-expires')
+  clearTimeout(mediaTimer); clearTimeout(expiryTimer)
+}
+function scheduleExpiry(expiresAt) {
+  clearTimeout(expiryTimer)
+  if (!expiresAt) return
+  sessionStorage.setItem('chalkline-expires', expiresAt)
+  const ms = Date.parse(expiresAt) - Date.now()
+  if (!Number.isFinite(ms)) return
+  expiryTimer = setTimeout(() => {
+    captureWork(); forgetSession(); login()
+    notice('Your session ended. Sign in again to continue. Any unsent work is still kept in this browser.', true)
+  }, Math.max(0, Math.min(ms, 2147483647)))
 }
 async function api(path, data, raw = false) {
-  const response = await fetch('/api/' + path, {
-    method: data === undefined ? 'GET' : 'POST',
-    headers: {
-      Authorization: 'Bearer ' + token,
-      ...(data === undefined ? {} : { 'Content-Type': 'application/json' })
-    },
-    ...(data === undefined ? {} : { body: JSON.stringify(data) })
-  })
-  if (!response.ok) {
-    const error = await response.json()
-    throw new Error(error.error || 'Please try again.')
+  const requestToken = token
+  let response
+  try {
+    response = await fetch('/api/' + path, {
+      method: data === undefined ? 'GET' : 'POST',
+      headers: { Authorization: 'Bearer ' + requestToken, ...(data === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      ...(data === undefined ? {} : { body: JSON.stringify(data) })
+    })
+  } catch {
+    const error = new Error('The connection was interrupted. Your input is still here. Reconnect and retry.')
+    error.ambiguous = true; throw error
   }
-  return raw ? response : response.json()
+  if (path !== 'login' && token !== requestToken) throw new Error('The workspace changed. Please try again.')
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}))
+    if (path !== 'login' && token !== requestToken) { const stale = new Error('The workspace changed. Sign in again to confirm this request.'); stale.ambiguous = true; throw stale }
+    const error = new Error(body.error || 'Please try again.')
+    error.status = response.status; error.ambiguous = response.status >= 500
+    if (response.status === 401 && path !== 'login') {
+      captureWork(); forgetSession(); login()
+      error.message = 'Please sign in again. Any unsent work is still kept in this browser.'
+    }
+    throw error
+  }
+  if (raw) return response
+  let result
+  try { result = await response.json() }
+  catch { const error = new Error('The reply was interrupted. Reconnect and retry the saved request.'); error.ambiguous = true; throw error }
+  if (path !== 'login' && token !== requestToken) { const error = new Error('The workspace changed. Sign in again to confirm this request.'); error.ambiguous = true; throw error }
+  return result
 }
+function scoped(path) { return path + (path.includes('?') ? '&' : '?') + 'classId=' + encodeURIComponent(currentClassId) }
 async function load() {
-  state = await api('state')
+  const next = await api(scoped('state'))
+  state = next; currentClassId = state.currentClassId || ''
+  if (state.expiresAt) scheduleExpiry(state.expiresAt)
+}
+const draftKey = id => 'chalkline:draft:' + state.user.id + ':' + id
+const requestKey = (path, id) => 'chalkline:request:' + state.user.id + ':' + path + ':' + id
+const memoryBackup = new Map()
+function readLocal(key) { if (memoryBackup.has(key)) return memoryBackup.get(key); try { return JSON.parse(localStorage.getItem(key)) } catch { return null } }
+function removeLocal(key) { memoryBackup.set(key, null); try { localStorage.removeItem(key) } catch { /* Keep the in-memory tombstone. */ } }
+function writeLocal(key, value) {
+  memoryBackup.set(key, value)
+  try { localStorage.setItem(key, JSON.stringify(value)) }
+  catch { notice('This browser cannot keep a backup. Keep this tab open and save your work when connected.', true) }
+}
+function pending(path, id) { return readLocal(requestKey(path, id)) }
+async function mutate(path, data, id) {
+  const key = requestKey(path, id), previous = readLocal(key), signature = JSON.stringify(data)
+  if (previous && previous.signature !== signature) throw new Error('An earlier request is waiting. Use its Retry button before sending something new.')
+  const request = previous || { signature, body: { ...data, requestId: crypto.randomUUID() } }
+  writeLocal(key, request)
+  try { const result = await api(path, request.body); removeLocal(key); return result }
+  catch (error) { if (!error.ambiguous) removeLocal(key); throw error }
+}
+function captureWork() {
+  const form = document.querySelector('#work'), a = state?.assignments.find(a => a.id === selected)
+  if (!form || !a || a.work[0]?.submitted) return
+  const data = new FormData(form), old = readLocal(draftKey(selected))
+  const answer = data.get('answer') === null ? null : Number(data.get('answer')), reasoning = String(data.get('reasoning') || '')
+  if (!old && answer === (a.work[0]?.answer ?? null) && reasoning === (a.work[0]?.reasoning || '')) return
+  writeLocal(draftKey(selected), { answer, reasoning, revision: old?.revision ?? a.work[0]?.revision ?? 0, updatedAt: new Date().toISOString(), conflict: old?.conflict || false })
+  const status = document.querySelector('#work-status')
+  if (status) status.textContent = 'Kept in this browser · Save to share your progress with your teacher.'
+}
+function retryBanner(path, id) {
+  return pending(path, id) ? '<div class="notice-inline retry"><p>The connection ended before we could confirm this request. Retry safely to check it.</p>' + button('retry-' + path, 'Retry ' + ({ progress: 'pending save', help: 'help request', publish: 'assignment' }[path]), 'data-id="' + E(id) + '"', true) + '</div>' : ''
 }
 function button(action, text, extra = '', secondary = false) {
   return (
@@ -58,48 +119,22 @@ function button(action, text, extra = '', secondary = false) {
   )
 }
 function login() {
-  root.innerHTML =
-    '<main class="login"><div class="brand"><span class="brandmark">c</span>chalkline</div><p class="eyebrow">A little help. A new understanding.</p><h1>Learning starts together.</h1><p>Open the classroom link your teacher shared, or enter your access code.</p><form id="login"><label>Classroom access code<input name="code" required autocomplete="off" type="password"></label><button>Open my workspace</button></form><p class="notice-inline">Local prototype · Use the four demo students. Real student onboarding is not enabled.</p></main>'
+  root.innerHTML = '<main class="login"><div class="brand"><span class="brandmark">c</span>chalkline</div><p class="eyebrow">A little help. A new understanding.</p><h1>Learning starts together.</h1><p>Sign in to your own learning space.</p><form id="login"><label>Username<input name="username" required autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64"></label><label>Password<input name="password" required autocomplete="current-password" type="password"></label><button>Sign in</button></form><p class="notice-inline">Students: use the username and password your teacher shared. This release uses synthetic classroom accounts.</p></main>'
 }
 function shell(content) {
-  const teacher = state.user.role === 'teacher'
-  const nav = teacher
-    ? [
-        ['overview', 'Classroom'],
-        ['studio', 'Lesson Studio'],
-        ['assignments', 'Assignments'],
-        ['insights', 'Questions & support']
-      ]
-    : []
-  root.innerHTML =
-    '<header><div class="brand"><span class="brandmark">c</span>chalkline <span class="pill">' +
-    (teacher ? 'Teacher' : 'Student') +
-    '</span></div><div class="identity"><span class="pill">Demo classroom</span><span>' +
-    E(state.user.name) +
-    '</span>' +
-    button('logout', 'Sign out', '', 'true') +
-    '</div></header>' +
-    (teacher
-      ? '<div class="layout"><nav aria-label="Teacher workspace">' +
-        nav
-          .map(
-            ([id, label]) =>
-              '<button type="button" data-tab="' +
-              id +
-              '" class="' +
-              (tab === id ? 'active' : '') +
-              '" ' +
-              (tab === id ? 'aria-current="page"' : '') +
-              '>' +
-              label +
-              '</button>'
-          )
-          .join('') +
-        '<div class="note"><b>Grade 3 · Fractions</b><br>Four demo learners<br><br>Create. Explore.<br>Understand together.</div></nav><main>'
-      : '<main class="student-main">') +
-    content +
-    '</main>' +
-    (teacher ? '</div>' : '')
+  const teacher = state.user.role === 'teacher', classes = state.classes || []
+  const nav = [['overview', 'Classroom'], ['studio', 'Lesson Studio'], ['assignments', 'Assignments'], ['insights', 'Questions & support'], ['classmates', 'Class & people']]
+  const picker = classes.length ? '<label class="class-picker">Your class<select id="class-select">' + classes.map(c => '<option value="' + E(c.id) + '" ' + (c.id === currentClassId ? 'selected' : '') + '>' + E(c.name) + '</option>').join('') + '</select></label>' : ''
+  root.innerHTML = '<header><div class="brand"><span class="brandmark">c</span>chalkline <span class="pill">' + (teacher ? 'Teacher' : 'Student') + '</span></div><div class="identity"><span>' + E(state.user.name) + '</span>' + button('account', 'Account', '', true) + button('logout', 'Sign out', '', true) + '</div></header>' + (teacher ? '<div class="layout"><nav aria-label="Teacher workspace">' + picker + nav.map(([id, label]) => '<button type="button" data-tab="' + id + '" class="' + (tab === id ? 'active' : '') + '" ' + (tab === id ? 'aria-current="page"' : '') + '>' + label + '</button>').join('') + '<div class="note"><b>Learning, together.</b><br>Reviewed lessons.<br>Questions worth hearing.<br><br><span class="pill">Synthetic classroom</span></div></nav><main>' : '<main class="student-main">' + picker) + content + '</main>' + (teacher ? '</div>' : '')
+}
+function account() {
+  return head('Your account', 'Keep your workspace yours.', 'Changing your password signs out every open session, including this one.') + '<section class="panel account-panel"><p>Signed in as <b>' + E(state.user.username || state.user.name) + '</b>.</p><form id="password"><label>Current password<input type="password" name="currentPassword" autocomplete="current-password" required></label><label>New password<input type="password" name="newPassword" autocomplete="new-password" minlength="12" maxlength="256" required></label><p><small>Use at least 12 characters.</small></p><button>Change password and sign out</button></form>' + button('account-back', 'Back to my workspace', '', true) + '</section>'
+}
+function credentialCard() {
+  return credentials ? '<section class="panel credential-card" aria-label="New sign-in details"><p class="eyebrow">Share privately with this student</p><h2>New sign-in details</h2><p>This password is shown only now. A password reset signs out their previous sessions.</p><label>Student username<input id="new-username" readonly value="' + E(credentials.username) + '"></label><label>Temporary student password<input id="new-password" readonly value="' + E(credentials.password) + '"></label><p><small>Sign-in page: ' + E(state.classroomUrl || location.origin) + '</small></p><div class="actions">' + button('copy-credentials', 'Copy sign-in details') + button('dismiss-credentials', 'I have saved these details', '', true) + '</div></section>' : ''
+}
+function classmates() {
+  return head('Class & people', 'A place for every learner.', 'Create a class, then share individual sign-in details privately with each learner.') + credentialCard() + '<div class="grid"><section class="panel"><h2>Your learners</h2><p class="muted">Students only see lessons assigned to them in their own classes.</p>' + studentLinks() + '</section><aside><section class="panel"><h2>Add a student</h2><form id="student-add"><label>Student name<input name="name" maxlength="100" required autocomplete="off"></label><label>Student username<input name="username" maxlength="64" minlength="3" required autocomplete="off" autocapitalize="none" spellcheck="false"></label><p><small>Use 3–64 letters, numbers, dots, underscores or dashes. A private password is created for you.</small></p><button>Create student sign-in</button></form></section><section class="panel"><h2>Start another class</h2><form id="class-create"><label>Class name<input name="name" maxlength="100" required placeholder="Grade 3 · Maple"></label><button>Create class</button></form></section></aside></div>'
 }
 function head(kicker, title, description, action = '') {
   return (
@@ -153,27 +188,13 @@ function overview() {
     button('refresh', 'Refresh', '', 'true') +
     '</div>' +
     assignmentRows() +
-    '</section><section class="panel"><p class="eyebrow">Try both sides</p><h2>Meet your demo learners</h2><p class="muted">Open a student in a separate tab, work through an assignment, then return here to see their questions and work.</p>' +
-    studentLinks() +
-    '<div class="divider">' +
-    button('desktop-link', 'Copy private desktop access link', '', 'true') +
-    '<p><small>Paste this into the native app’s Classroom tab to connect the same teacher workspace.</small></p><div id="desktop-link-result"></div></div></section>'
+    '</section><section class="panel"><p class="eyebrow">Your class</p><h2>Ready to learn together.</h2><p class="muted">Add learners and share their sign-in details, then assign a reviewed lesson.</p>' + button('manage-class', 'Manage class & people', '', true) + '<div class="divider">' + button('desktop-link', 'Copy expiring desktop session link', '', true) + '<p><small>This private link shares your current teacher session. It expires when you sign out or the session ends. Paste it into the native Classroom tab.</small></p><div id="desktop-link-result"></div></div></section>'
   )
 }
 function studentLinks() {
-  return (
-    state.students
-      .map(
-        s =>
-          '<div class="row"><div><h3>' +
-          E(s.name) +
-          '</h3><small>Demo learner · Grade 3</small></div>' +
-          button('student-link', 'Get student link', 'data-id="' + s.id + '"', true) +
-          '</div>'
-      )
-      .join('') + '<div id="student-link-result" aria-live="polite"></div>'
-  )
+  return state.students.length ? state.students.map(s => '<div class="row"><div><h3>' + E(s.name) + '</h3><small>' + E(s.username) + (s.active === false ? ' · Removed from this class' : '') + '</small></div>' + (s.active === false ? '' : '<div class="actions">' + button('reset-student', 'Reset password', 'data-id="' + E(s.id) + '"', true) + button('remove-student', 'Remove from class', 'data-id="' + E(s.id) + '"', true) + '</div>') + '</div>').join('') : '<div class="empty">No learners yet. Add your first student to this class.</div>'
 }
+
 function field(name, label, value, multiline = false, type = 'text') {
   return (
     '<label>' +
@@ -243,8 +264,8 @@ function studio() {
     '</p></div><div class="actions">' +
     button('render', 'Make video', m?.status === 'rendering' ? 'disabled' : '') +
     '</div><div id="video-host"></div></section>' +
-    '<section class="panel"><p class="eyebrow">Publish a reviewed version</p><h2>Who is this for?</h2><form id="publish">' +
-    state.students
+    '<section class="panel">' + retryBanner('publish', currentClassId) + '<p class="eyebrow">Publish a reviewed version</p><h2>Who is this for?</h2><form id="publish">' +
+    state.students.filter(s => s.active !== false)
       .map(
         s =>
           '<label class="check"><input type="checkbox" name="students" value="' +
@@ -341,7 +362,7 @@ function assignments() {
               help = a.help.filter(h => h.student === id)
             return (
               '<details open><summary>' +
-              E(s.name) +
+              E(s?.name || 'Former class member') +
               ' · ' +
               (w?.submitted ? 'Submitted' : w ? 'Draft saved' : 'Not started') +
               '</summary><p><b>Answer:</b> ' +
@@ -392,7 +413,7 @@ function engineLabel(engine) {
 function studentHome() {
   return (
     head(
-      'Your learning space',
+      'Today & homework',
       'Hi, ' + E(state.user.name.split(' ')[0]) + '.',
       'A question is a good place to start. Choose a lesson and take it one step at a time.'
     ) +
@@ -405,6 +426,7 @@ function studentHome() {
               E(a.due) +
               ' · ' +
               E(a.lesson.audience) +
+              ' · ' + (a.work[0]?.submitted ? 'Complete' : a.due < new Date().toLocaleDateString('en-CA') ? 'Past due · You can still work on it' : a.due === new Date().toLocaleDateString('en-CA') ? 'Due today' : 'Upcoming') +
               '</p><h2>' +
               E(a.title) +
               '</h2><p>' +
@@ -430,8 +452,10 @@ function studentLesson() {
     selected = ''
     return studentHome()
   }
-  const w = a.work[0],
-    submitted = !!w?.submitted
+  const w = a.work[0], submitted = !!w?.submitted
+  const draft = submitted ? null : readLocal(draftKey(a.id))
+  const shown = draft || w
+  const conflict = !!draft && (draft.conflict || draft.revision !== (w?.revision || 0))
   return (
     '<div class="actions">' +
     button('student-home', '← My lessons', '', 'true') +
@@ -447,7 +471,7 @@ function studentLesson() {
     '<section class="panel"><p class="eyebrow">02 · Try it yourself</p><h2>Move the pieces. Notice what changes.</h2><div id="preview-host"></div></section>' +
     '<section class="panel"><p class="eyebrow">03 · Show your thinking</p><h2>' +
     E(a.lesson.question) +
-    '</h2><form id="work"><fieldset ' +
+    '</h2><form id="work"><div id="work-notices">' + retryBanner('progress', a.id) + (conflict ? conflictNotice() : '') + '</div><fieldset ' +
     (submitted ? 'disabled' : '') +
     '><legend class="muted">Choose an answer</legend>' +
     a.lesson.options
@@ -456,19 +480,19 @@ function studentLesson() {
           '<label class="choice"><input type="radio" name="answer" value="' +
           i +
           '" ' +
-          (w?.answer === i ? 'checked' : '') +
+          (shown?.answer === i ? 'checked' : '') +
           '>' +
           E(o) +
           '</label>'
       )
       .join('') +
     '<label>How do you know?<textarea name="reasoning" maxlength="3000" placeholder="I noticed that…">' +
-    E(w?.reasoning || '') +
+    E(shown?.reasoning || '') +
     '</textarea></label></fieldset>' +
     (!submitted
       ? '<div class="actions"><button name="intent" value="save" class="secondary">Save my progress</button><button name="intent" value="submit">Turn in my work</button></div>'
       : '<p class="notice-inline">Your work is turned in. Your teacher can see your explanation.</p>') +
-    '<small id="work-status">Your work is saved when you choose Save or Turn in.</small></form>' +
+    '<p id="work-status" role="status" class="save-status">' + (submitted ? 'Shared with your teacher.' : draft ? 'Restored from this browser · Save to share your progress with your teacher.' : w ? 'Saved with your teacher.' : 'Choose Save to keep your progress with your teacher.') + '</p></form>' +
     (w?.feedback ? '<p class="notice-inline"><b>From your teacher:</b> ' + E(w.feedback) + '</p>' : '') +
     '</section></div>' +
     '<aside class="sticky"><section class="panel"><p class="eyebrow">A little help along the way</p><h2>Let’s think it through.</h2><p class="notice-inline">Your teacher can read the questions and replies here. You can ask for help as often as you need.</p><div class="chatlog" id="chatlog">' +
@@ -484,7 +508,7 @@ function studentLesson() {
           '</div>'
       )
       .join('') +
-    '</div><form id="help"><label>What would you like help with?<textarea name="question" maxlength="1200" required placeholder="Why do more parts make smaller pieces?"></textarea></label><button>' +
+    '</div><form id="help"><div id="help-notices">' + retryBanner('help', a.id) + '</div><label>What would you like help with?<textarea name="question" maxlength="1200" required placeholder="Why do more parts make smaller pieces?"></textarea></label><button>' +
     (a.mode === 'teacher' ? 'Ask my teacher' : 'Help me understand') +
     '</button><p><small>Help may take a moment. A saved lesson hint is available if AI cannot connect.</small></p></form></section></aside></div>'
   )
@@ -493,7 +517,7 @@ async function showPreview(assignment) {
   const host = document.querySelector('#preview-host')
   if (!host) return
   const html = await (
-    await api('lesson-html' + (assignment ? '?assignment=' + assignment : ''), undefined, true)
+    await api(scoped('lesson-html' + (assignment ? '?assignment=' + assignment : '')), undefined, true)
   ).text()
   const frame = document.createElement('iframe')
   frame.className = 'preview'
@@ -526,14 +550,14 @@ async function render() {
   clearTimeout(mediaTimer)
   for (const b of blobs) URL.revokeObjectURL(b)
   blobs = []
-  shell(
+  shell(tab === 'account' ? account() :
     state.user.role === 'teacher'
-      ? ({ overview, studio, assignments, insights }[tab] || overview)()
+      ? ({ overview, studio, assignments, insights, classmates }[tab] || overview)()
       : selected
         ? studentLesson()
         : studentHome()
   )
-  if (state.user.role === 'student' && selected) {
+  if (tab !== 'account' && state.user.role === 'student' && selected) {
     await showPreview(selected)
     const a = state.assignments.find(a => a.id === selected)
     if (a?.media) await video(a.media)
@@ -548,7 +572,9 @@ function pollMedia() {
   mediaTimer = setTimeout(async () => {
     if (tab !== 'studio') return
     try {
-      const fresh = await api('state')
+      const requestedClass = currentClassId
+      const fresh = await api(scoped('state'))
+      if (currentClassId !== requestedClass) return
       state.media = fresh.media
       const m = state.media.find(m => m.revision === state.draft.revision)
       const status = document.querySelector('#media-status')
@@ -600,225 +626,206 @@ function markDirty() {
   const reviewed = document.querySelector('[name="reviewed"]')
   if (reviewed) reviewed.checked = false
 }
-root.addEventListener('input', e => {
-  if (e.target.closest('#lesson-form')) {
-    working = collectLesson()
-    markDirty()
+function conflictNotice() {
+  return '<div class="notice-inline conflict" role="alert"><p>Your work changed in another session. Your answer here is still kept. Reload the saved work before continuing.</p>' + button('reload-work', 'Reload saved work', '', true) + '</div>'
+}
+async function finishProgress(result, assignmentId, submitted, attempted) {
+  const key = draftKey(assignmentId), draft = readLocal(key)
+  const unchanged = !draft || (draft.answer === attempted.answer && draft.reasoning === attempted.reasoning)
+  if (unchanged || submitted) removeLocal(key)
+  await load()
+  if (!unchanged && !submitted) {
+    const a = state.assignments.find(a => a.id === assignmentId)
+    writeLocal(key, { ...draft, revision: a?.work[0]?.revision || result.revision, conflict: false })
   }
+  await render()
+  notice(submitted ? 'Your work is turned in.' : unchanged ? 'Your progress is saved with your teacher.' : 'The earlier save is confirmed. Your newer edits are still kept in this browser.')
+}
+function appendHelp(result, assignmentId) {
+  const a = state.assignments.find(a => a.id === assignmentId), already = a?.help.some(h => h.id === result.id)
+  if (a && !already) a.help.push(result)
+  const log = document.querySelector('#chatlog')
+  if (selected !== assignmentId || !log) { notice('Your help reply is saved with the lesson.'); return }
+  if (!already) log.insertAdjacentHTML('beforeend', '<div class="bubble student">' + E(result.question) + '</div><div class="bubble"><small>' + engineLabel(result.engine) + '</small><br>' + E(result.reply) + '</div>')
+  document.querySelector('#help-notices').innerHTML = ''
+  document.querySelector('#help').reset()
+  log.scrollTop = log.scrollHeight
+}
+async function retryRequest(path, id) {
+  const key = requestKey(path, id), request = readLocal(key)
+  if (!request) return
+  const requestToken = token
+  try {
+    const result = await api(path, request.body)
+    if (token !== requestToken) return
+    removeLocal(key)
+    if (path === 'progress') await finishProgress(result, id, request.body.submit, request.body)
+    if (path === 'help') appendHelp({ ...result, question: request.body.question }, id)
+    if (path === 'publish') { await load(); tab = 'assignments'; await render(); notice('The assignment is confirmed. Students can open it now.') }
+  } catch (error) {
+    if (!error.ambiguous) removeLocal(key)
+    showMutationError(path, id, error); throw error
+  }
+}
+function showMutationError(path, id, error) {
+  if (!state) return
+  if (path === 'progress') {
+    const draft = readLocal(draftKey(id))
+    if (error.status === 409 && draft) writeLocal(draftKey(id), { ...draft, conflict: true })
+    const host = document.querySelector('#work-notices')
+    if (host) host.innerHTML = retryBanner(path, id) + (error.status === 409 ? conflictNotice() : '')
+    const status = document.querySelector('#work-status')
+    if (status) status.textContent = 'Not confirmed with your teacher · Your answer is still kept in this browser.'
+  } else if (path === 'help') {
+    const host = document.querySelector('#help-notices')
+    if (host) host.innerHTML = retryBanner(path, id)
+  } else if (path === 'publish') {
+    const form = document.querySelector('#publish')
+    if (form && !form.querySelector('.retry')) form.insertAdjacentHTML('afterbegin', retryBanner(path, id))
+  }
+}
+root.addEventListener('input', e => {
+  if (e.target.closest('#lesson-form')) { working = collectLesson(); markDirty() }
+  if (e.target.closest('#work')) captureWork()
+})
+root.addEventListener('change', async e => {
+  if (e.target.id !== 'class-select') return
+  const next = e.target.value
+  if (busyOperations) { e.target.value = currentClassId; notice('Wait for the current request to finish before switching classes.'); return }
+  if (dirty && !confirm('Leave your unsaved lesson edits and switch classes?')) { e.target.value = currentClassId; return }
+  captureWork()
+  const previous = currentClassId; currentClassId = next; busyOperations++; e.target.disabled = true
+  try { await load(); working = null; dirty = false; previewed = 0; selected = ''; credentials = null; await render() }
+  catch (error) { currentClassId = previous; e.target.value = previous; notice(error.message, true) }
+  finally { busyOperations--; e.target.disabled = false }
 })
 root.addEventListener('click', async e => {
-  const button = e.target.closest('button')
-  if (!button) return
-  const action = button.dataset.action,
-    nav = button.dataset.tab
+  const clicked = e.target.closest('button')
+  if (!clicked) return
+  const action = clicked.dataset.action, nav = clicked.dataset.tab
   if (!action && !nav) return
+  if (busyOperations) { notice('Wait for the current request to finish.'); return }
+  busyOperations++
   try {
-    if (nav) {
-      tab = nav
-      await render()
-      return
-    }
-    button.disabled = true
+    captureWork()
+    if (nav) { tab = nav; credentials = null; await render(); return }
+    clicked.disabled = true
     const actions = {
       'desktop-link': async () => {
-        const link = location.origin + '/#access=' + token
-        try {
-          await navigator.clipboard.writeText(link)
-          notice('Private teacher link copied. Paste it into the native Classroom tab.')
-        } catch {
-          document.querySelector('#desktop-link-result').innerHTML =
-            '<label>Private teacher link<input readonly value="' + E(link) + '"></label>'
-        }
+        const link = 'http://127.0.0.1:5195/#access=' + token
+        try { await navigator.clipboard.writeText(link); notice('Expiring teacher session link copied. Keep it private.') }
+        catch { document.querySelector('#desktop-link-result').innerHTML = '<label>Expiring teacher session link<input readonly value="' + E(link) + '"></label>' }
       },
-      logout: () => {
-        token = ''
-        sessionStorage.removeItem('chalkline-access')
-        clearTimeout(mediaTimer)
-        login()
+      logout: async () => { await api('logout', {}); forgetSession(); tab = 'overview'; login() },
+      account: async () => { tab = 'account'; await render() },
+      'account-back': async () => { tab = 'overview'; await render() },
+      'manage-class': async () => { tab = 'classmates'; await render() },
+      'copy-credentials': async () => { await navigator.clipboard.writeText('Chalkline: ' + (state.classroomUrl || location.origin) + '\nUsername: ' + credentials.username + '\nPassword: ' + credentials.password); notice('Sign-in details copied. Share them privately with this student.') },
+      'dismiss-credentials': async () => { credentials = null; await render() },
+      'reset-student': async () => {
+        const s = state.students.find(s => s.id === clicked.dataset.id)
+        if (!confirm('Reset ' + s.name + '’s password? Their open sessions will be signed out. You will need to share the new password privately.')) return
+        const result = await api('students/reset', { classId: currentClassId, studentId: s.id })
+        credentials = result.credentials || result; await render()
       },
-      refresh: async () => {
-        await load()
-        await render()
-        notice('Classroom updated.')
+      'remove-student': async () => {
+        const s = state.students.find(s => s.id === clicked.dataset.id)
+        if (!confirm('Remove ' + s.name + ' from this class? They will lose access to this class and its assignments. Their existing work stays in teacher records.')) return
+        await api('students/remove', { classId: currentClassId, studentId: s.id })
+        credentials = null; await load(); await render(); notice('Student removed from this class.')
       },
-      studio: async () => {
-        tab = 'studio'
-        await render()
-      },
-      inspect: async () => {
-        selected = button.dataset.id
-        tab = 'assignments'
-        await render()
-      },
-      learn: async () => {
-        selected = button.dataset.id
-        await render()
-      },
-      'student-home': async () => {
-        selected = ''
-        await load()
-        await render()
-      },
-      preview: async () => {
-        if (dirty) throw new Error('Save your edits before previewing this version.')
-        await showPreview()
-        previewed = state.draft.revision
-        notice('Preview ready. Review the activity and script before assigning.')
-      },
-      'export-html': () => {
-        if (dirty) throw new Error('Save your changes before exporting.')
-        return download('lesson-html', 'chalkline-lesson.html')
-      },
-      render: async () => {
-        if (dirty) throw new Error('Save your changes before making the video.')
-        await api('media', { revision: state.draft.revision })
-        await load()
-        await render()
-      },
-      'download-video': () =>
-        download('media-file?asset=' + button.dataset.asset + '&file=explanation.mp4', 'chalkline-explanation.mp4'),
-      'download-captions': () =>
-        download('media-file?asset=' + button.dataset.asset + '&file=captions.vtt', 'chalkline-captions.vtt'),
-      'student-link': async () => {
-        const links = await api('links'),
-          s = links.students.find(s => s.id === button.dataset.id)
-        const host = document.querySelector('#student-link-result')
-        host.innerHTML =
-          '<p class="notice-inline">This link opens only ' +
-          E(s.name) +
-          '’s demo workspace on this computer.</p><p><a href="' +
-          E(s.url) +
-          '" target="_blank" rel="noopener noreferrer">Open ' +
-          E(s.name) +
-          '’s student workspace ↗</a></p><div class="linkbox">' +
-          E(s.url) +
-          '</div>'
-      },
-      followup: async () => {
-        const result = await api('followup', { assignmentId: button.dataset.id })
-        working = result.lesson
-        dirty = true
-        previewed = 0
-        tab = 'studio'
-        await render()
-        notice('Follow-up draft created. Review and save before assigning.')
+      refresh: async () => { await load(); await render(); notice('Classroom updated.') },
+      studio: async () => { tab = 'studio'; await render() },
+      inspect: async () => { selected = clicked.dataset.id; tab = 'assignments'; await render() },
+      learn: async () => { selected = clicked.dataset.id; await render() },
+      'student-home': async () => { selected = ''; await load(); await render() },
+      preview: async () => { if (dirty) throw new Error('Save your edits before previewing this version.'); await showPreview(); previewed = state.draft.revision; notice('Preview ready. Review the activity and script before assigning.') },
+      'export-html': () => { if (dirty) throw new Error('Save your changes before exporting.'); return download(scoped('lesson-html'), 'chalkline-lesson.html') },
+      render: async () => { if (dirty) throw new Error('Save your changes before making the video.'); await api('media', { classId: currentClassId, revision: state.draft.revision }); await load(); await render() },
+      'download-video': () => download('media-file?asset=' + clicked.dataset.asset + '&file=explanation.mp4', 'chalkline-explanation.mp4'),
+      'download-captions': () => download('media-file?asset=' + clicked.dataset.asset + '&file=captions.vtt', 'chalkline-captions.vtt'),
+      followup: async () => { const result = await api('followup', { classId: currentClassId, assignmentId: clicked.dataset.id }); working = result.lesson; dirty = true; previewed = 0; tab = 'studio'; await render(); notice('Follow-up draft created. Review and save before assigning.') },
+      'retry-progress': () => retryRequest('progress', clicked.dataset.id),
+      'retry-help': () => retryRequest('help', clicked.dataset.id),
+      'retry-publish': () => retryRequest('publish', clicked.dataset.id),
+      'reload-work': async () => {
+        if (!confirm('Replace the answer kept in this browser with the latest saved work? Copy any thinking you want to keep first.')) return
+        removeLocal(draftKey(selected)); removeLocal(requestKey('progress', selected))
+        await load(); await render(); notice('Latest saved work loaded.')
       }
     }
     if (actions[action]) await actions[action]()
-  } catch (error) {
-    notice(error.message, true)
-  } finally {
-    button.disabled = false
-  }
+  } catch (error) { notice(error.message, true) }
+  finally { busyOperations--; clicked.disabled = false }
 })
 root.addEventListener('submit', async e => {
   e.preventDefault()
-  const form = e.target,
-    submitter = e.submitter
-  const data = new FormData(form)
+  const form = e.target, submitter = e.submitter, data = new FormData(form), requestToken = token
+  if (form.dataset.busy || busyOperations) return
+  busyOperations++
+  form.dataset.busy = 'true'
   if (submitter) submitter.disabled = true
   try {
     if (form.id === 'login') {
-      token = String(data.get('code'))
-        .trim()
-        .replace(/^.*#access=/, '')
-      await load()
-      sessionStorage.setItem('chalkline-access', token)
-      await render()
-      return
+      const result = await api('login', { username: String(data.get('username')).trim(), password: String(data.get('password')) })
+      token = result.token; sessionStorage.setItem('chalkline-access', token); scheduleExpiry(result.expiresAt)
+      currentClassId = ''; tab = 'overview'; selected = ''; working = null; dirty = false
+      await load(); await render(); return
+    }
+    if (form.id === 'password') {
+      await api('password', { currentPassword: data.get('currentPassword'), newPassword: data.get('newPassword') })
+      forgetSession(); login(); notice('Password changed. Sign in with your new password.'); return
+    }
+    if (form.id === 'class-create') {
+      const result = await api('classes', { name: data.get('name') })
+      currentClassId = result.id || result.class?.id; selected = ''; working = null; dirty = false; previewed = 0; credentials = null
+      await load(); await render(); notice('Class created. Add its first learner.'); return
+    }
+    if (form.id === 'student-add') {
+      const result = await api('students', { classId: currentClassId, name: data.get('name'), username: data.get('username') })
+      credentials = result.credentials; await load(); await render(); notice('Student sign-in created. Save and share these details privately.'); return
     }
     if (form.id === 'lesson-form') {
-      const result = await api('lesson', { lesson: collectLesson(), revision: state.draft.revision })
-      state.draft = result
-      working = null
-      dirty = false
-      previewed = 0
-      await render()
-      notice('Lesson saved. Preview the new version before assigning.')
+      state.draft = await api('lesson', { classId: currentClassId, lesson: collectLesson(), revision: state.draft.revision })
+      working = null; dirty = false; previewed = 0; await render(); notice('Lesson saved. Preview the new version before assigning.')
     }
     if (form.id === 'generate') {
-      const result = await api('generate', { brief: data.get('brief') })
-      working = result.lesson
-      dirty = true
-      previewed = 0
-      await render()
-      notice('AI draft ready. Check the explanation and answer key, then save.')
+      const result = await api('generate', { classId: currentClassId, brief: data.get('brief') })
+      working = result.lesson; dirty = true; previewed = 0; await render(); notice('AI draft ready. Check the explanation and answer key, then save.')
     }
     if (form.id === 'publish') {
-      if (dirty || previewed !== state.draft.revision)
-        throw new Error('Preview the current saved lesson before assigning it.')
+      if (dirty || previewed !== state.draft.revision) throw new Error('Preview the current saved lesson before assigning it.')
       const media = state.media.find(m => m.revision === state.draft.revision)
       if (media?.status === 'rendering') throw new Error('Wait for the video to finish so it can be included.')
-      await api('publish', {
-        revision: state.draft.revision,
-        students: data.getAll('students'),
-        due: data.get('due'),
-        mode: data.get('mode'),
-        reviewed: data.get('reviewed') === 'on'
-      })
-      await load()
-      tab = 'assignments'
-      await render()
-      notice('Assigned. Students can open this reviewed version now.')
+      try { await mutate('publish', { classId: currentClassId, revision: state.draft.revision, students: data.getAll('students'), due: data.get('due'), mode: data.get('mode'), reviewed: data.get('reviewed') === 'on' }, currentClassId) }
+      catch (error) { showMutationError('publish', currentClassId, error); throw error }
+      await load(); tab = 'assignments'; await render(); notice('Assigned. Students can open this reviewed version now.')
     }
     if (form.id === 'work') {
-      const answer = data.get('answer')
-      await api('progress', {
-        assignmentId: selected,
-        answer: answer === null ? null : Number(answer),
-        reasoning: data.get('reasoning'),
-        submit: submitter?.value === 'submit'
-      })
-      await load()
-      await render()
-      notice(submitter?.value === 'submit' ? 'Your work is turned in.' : 'Your progress is saved.')
+      const assignmentId = selected
+      captureWork()
+      const draft = readLocal(draftKey(assignmentId))
+      const body = { assignmentId, revision: draft?.revision ?? state.assignments.find(a => a.id === assignmentId).work[0]?.revision ?? 0, answer: data.get('answer') === null ? null : Number(data.get('answer')), reasoning: String(data.get('reasoning') || ''), submit: submitter?.value === 'submit' }
+      if (body.submit) form.querySelector('fieldset').disabled = true
+      try { const result = await mutate('progress', body, assignmentId); if (token === requestToken) await finishProgress(result, assignmentId, body.submit, body) }
+      catch (error) { showMutationError('progress', assignmentId, error); throw error }
     }
     if (form.id === 'help') {
-      const question = data.get('question'),
-        assignmentId = selected,
-        requestToken = token
-      const result = await api('help', { assignmentId, question })
-      if (token !== requestToken) return
-      const a = state.assignments.find(a => a.id === assignmentId)
-      if (a && !a.help.some(h => h.id === result.id)) a.help.push(result)
-      const log = document.querySelector('#chatlog')
-      if (selected !== assignmentId || !log) {
-        notice('Your help reply is saved with the lesson.')
-        return
-      }
-      log.insertAdjacentHTML(
-        'beforeend',
-        '<div class="bubble student">' +
-          E(question) +
-          '</div><div class="bubble"><small>' +
-          engineLabel(result.engine) +
-          '</small><br>' +
-          E(result.reply) +
-          '</div>'
-      )
-      form.reset()
-      log.scrollTop = log.scrollHeight
+      const assignmentId = selected, question = data.get('question')
+      try { const result = await mutate('help', { assignmentId, question }, assignmentId); if (token === requestToken) appendHelp({ ...result, question }, assignmentId) }
+      catch (error) { showMutationError('help', assignmentId, error); throw error }
     }
     if (form.dataset.feedback) {
-      await api('feedback', {
-        assignmentId: form.dataset.assignment,
-        studentId: form.dataset.feedback,
-        feedback: data.get('feedback')
-      })
-      await load()
-      notice('Feedback shared with the student.')
+      await api('feedback', { classId: currentClassId, assignmentId: form.dataset.assignment, studentId: form.dataset.feedback, feedback: data.get('feedback') })
+      await load(); notice('Feedback shared with the student.')
     }
-  } catch (error) {
-    notice(error.message, true)
-  } finally {
-    if (submitter) submitter.disabled = false
-  }
+  } catch (error) { notice(error.message, true) }
+  finally { busyOperations--; delete form.dataset.busy; if (form.id === 'work' && form.isConnected) form.querySelector('fieldset').disabled = false; if (submitter) submitter.disabled = false }
 })
+window.addEventListener('offline', () => { captureWork(); notice('You are offline. Keep this tab open or return later; your typed work is kept in this browser.', true) })
+window.addEventListener('online', () => notice('Connection restored. Save your progress or retry any request that was interrupted.'))
+window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = '' } })
 if (token) {
-  load()
-    .then(render)
-    .catch(error => {
-      login()
-      notice(error.message, true)
-    })
+  if (!incomingSession) scheduleExpiry(sessionStorage.getItem('chalkline-expires'))
+  load().then(render).catch(error => { login(); notice(error.message, true) })
 } else login()

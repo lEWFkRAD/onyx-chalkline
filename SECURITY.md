@@ -25,4 +25,4 @@ controls.
 
 ## Connected classroom demo
 
-The classroom service is loopback-only and uses reusable demo access links. Keep its ignored data directory, access/launch files, SQLite database, media, logs and provider configuration out of public issues and commits. It is not a production identity or student-record system.
+The classroom service binds to loopback by default. Cross-device access requires a configured HTTPS origin and private network proxy, or direct TLS; plain non-loopback HTTP is rejected. Individual passwords are salted with scrypt, sessions expire and can be revoked, and assignment/media access is checked against class membership. Keep ignored data directories, bootstrap credentials, SQLite databases, backups, media, logs and provider configuration private. Browser drafts are scoped to the signed-in account but remain on that device until saved or cleared; use trusted devices for this synthetic demo. These controls do not establish readiness for real student records.

@@ -1,80 +1,81 @@
-# Chalkline connected classroom prototype
+# Chalkline connected classroom 0.2
 
-A local teacher/student companion for the Chalkline Hermes desktop fork. Uses Node's built-in HTTP server and SQLite; no new npm dependencies.
+One shared classroom service for the teacher desktop and student browsers. Teachers create classes, enroll synthetic learners, review lessons and assign work. Students sign in individually, explore the lesson, ask for help, save or submit work and receive teacher feedback.
 
-## Run
+The first shared release remains a **synthetic-data prototype for one school installation**. It supports multiple teacher-owned classes; it is not yet an approved real-student or multi-school service. Visual lessons currently cover Grade 3 unit fractions. Narrated video rendering currently uses Windows.
 
-From this directory on Windows, run `./Start-Classroom.ps1`. Node.js 22.16 or newer must be on PATH. It starts the service on http://127.0.0.1:5195 and opens the private teacher link. Use **Classroom → Get student link** to open a demo student in another browser tab. The native app's **Connected classroom** view embeds the same service; sign in there with the teacher access code from the local private access file if needed.
+## Start on this computer
 
-Service command: `node server.mjs --data <private directory> --config <private config.json> --port 5195`.
-
-## Portable setup
-
-The core service has **no third-party runtime dependencies** and runs on Windows, Linux and macOS with Node.js 22.16+ (Node 24 recommended):
+Requires Node.js 24.11 or newer. No third-party runtime packages are needed:
 
 ```sh
+cd classroom
 node server.mjs
 ```
 
-Read `data/launch.json` locally and open its `teacherUrl` in your browser. Treat that file, `data/access.json`, the SQLite database and all local configuration as private. The URL contains a reusable demo credential. Keep one browser tab per role. The service binds only to `127.0.0.1`; student links work on this computer only.
+Open `http://127.0.0.1:5195`. Initial randomly generated teacher and demo-student credentials are stored in the private `data/bootstrap.json` file. Keep that file and the entire data directory out of Git, public issues and shared screenshots. Sign in with the teacher username and password, then create a class or use the four initial fictional learners. A school operator controls this installation; there is no public self-registration or way to request a teacher role from the browser.
 
-On Windows, `./Start-Classroom.ps1` starts the same service hidden and opens the teacher view. It accepts `-DataDirectory`, `-ConfigPath`, `-Port` and `-NoBrowser`. It does not install Node or configure any model provider. To stop a launcher-started service, verify the process identified by your local `data/launch.json` and stop that Node process. A foreground service stops with Ctrl+C.
+On Windows, `./Start-Classroom.ps1` starts a hidden service and opens the sign-in page. `-TeacherSession` opens a short-lived teacher session using the locally stored initial credentials; once the password changes, sign in normally. The launcher also accepts `-DataDirectory`, `-ConfigPath`, `-Port` and `-NoBrowser`, and checks that an existing process belongs to the selected data directory.
 
-Optional AI: copy `config.example.json` to `data/config.json`, set your approved provider and model, and restart. Set `CHALKLINE_AI_KEY` in the service environment only if the provider requires a secret. Without a provider, the lesson editor, assignments and saved hints work; AI drafting reports that it is unavailable. No endpoint is enabled by default.
+## First shared classroom cycle
 
-Optional narrated video: Windows with System.Speech and FFmpeg (including libx264, AAC, drawtext and drawbox support) on PATH. Override executable paths in the private config if needed. Linux/macOS support lesson, assignment and help workflows; this narration implementation is Windows-only.
+1. Sign in as a teacher. Create a class, then add a learner with a name and unique username. Share the displayed generated password privately; reset it if it is lost.
+2. In Lesson Studio, edit the explanation, narration scenes, quiz and private teaching notes. Save and preview the current version.
+3. Optionally make a narrated video. Review the exact saved lesson, answer key and any included media, then assign it to selected class members with a due date and help policy.
+4. The learner signs in from their browser. They can explore the HTML activity, watch the video, ask lesson-specific questions, save an answer or turn it in.
+5. Review the learner's submitted work and actual questions/replies. Send feedback or draft a follow-up lesson.
 
-Development checks, from this directory (`--workspaces=false` also supports use inside the Hermes monorepo):
+Class membership is enforced for every assignment, asset and work request. Published lesson versions remain unchanged after later edits. Teacher notes and answer keys never enter student responses or tutor context. Removing a learner or resetting a password revokes their existing sessions. Signing out revokes the current session; changing a password ends all sessions for that account.
+
+Students can see that teachers receive their lesson questions and replies. Topic groupings use keyword rules and are not diagnoses, grades or measures of ability.
+
+## Private access across devices
+
+Keep the service on loopback and place an authenticated private-network HTTPS proxy in front of it. In the private config, pin the browser origin:
+
+```json
+{
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5195,
+    "publicOrigin": "https://your-private-host.example:8460"
+  }
+}
+```
+
+The proxy must preserve the configured Host header. Client-supplied forwarding headers do not grant authority. The local address remains usable by the desktop client. A device also needs network access to the private endpoint; a classroom username alone does not grant private-network membership.
+
+For a Tailscale installation, [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) can terminate HTTPS and proxy to `http://127.0.0.1:5195`. Inspect existing Serve configuration and choose a free port before adding a route. Use Serve for the private demo, not Funnel. This repository does not change any network routing automatically.
+
+Alternatively, direct HTTPS is supported with `server.host` set to the selected interface IP and `server.tls` containing `certFile` and `keyFile` paths. An explicit HTTPS `publicOrigin` is required. Plain HTTP listening on a non-loopback interface is rejected. Store certificates, private keys and provider credentials outside the repository and restrict access to the data directory.
+
+## AI and video
+
+Copy `config.example.json` to the private data directory, supply your approved AI endpoint/model if desired, and restart. Use the `CHALKLINE_AI_KEY` environment variable only if that endpoint requires a secret. With no provider, authoring, assignments and saved lesson hints remain usable; AI drafting reports that it is unavailable. Model calls have no Hermes tools and use only the assigned public lesson and that student's recent exchanges. Calls within the service are serialized; unavailable or busy AI produces an explicitly labeled saved hint.
+
+Windows narration requires System.Speech and FFmpeg with libx264, AAC, drawtext and drawbox support. Configure executable paths through the private `media` settings when they are not on PATH. A render produces an MP4, WebVTT captions and a transcript. Only media attached to an assigned reviewed version is available to its learners. Linux/macOS can host the remaining classroom workflows.
+
+## Recovery and upgrading
+
+Read [OPERATIONS.md](OPERATIONS.md) for offline backup, validation and restoration. Stop the classroom and back up its state before upgrading. Restores use a new empty destination and require a fresh sign-in.
+
+Version 0.2 migrates v1 draft, assignment, membership, work, feedback, help and media records. Existing permanent access links stop working; the private bootstrap file provides the new initial sign-ins. Keep the old version and its pre-upgrade backup available for rollback. Never point an older binary at a migrated database.
+
+Work saves are versioned. Stale edits return a conflict instead of overwriting newer work. Publishing, submitting work and help requests use request IDs, so repeating an ambiguous request does not create duplicate assignments, submissions or questions. A changed request cannot reuse the same ID. The student browser preserves unfinished answers for retry and clearly distinguishes browser drafts from work saved to the classroom.
+
+## Source and verification
+
+This `classroom/` directory is the maintained service source. The Hermes desktop connects to its API and browser UI; it does not need a second implementation of the classroom database or tutor. The older root evidence demo is separate historical product exploration.
 
 ```sh
 npm ci --workspaces=false
 npm test --workspaces=false
 npx --workspaces=false playwright install chromium
 npm run test:browser --workspaces=false
-# Windows only, with FFmpeg available:
+# Windows with FFmpeg:
 npm run test:media --workspaces=false
 ```
 
-Browser checks use temporary synthetic state and save screenshots to ignored `artifacts/`. Media checks generate a real MP4, captions and transcript there. They do not call a paid model. Live AI quality and school deployment are outside CI.
+Tests cover actual HTTP access boundaries, reviewed snapshots, retry behavior, password/session revocation, private model context, migration preservation, backup/restore and the teacher/student browser workflow. Live model quality, physical-device behavior and school readiness require their own validation.
 
-## First classroom cycle
-
-1. Lesson Studio: edit the fraction explanation, three narration scenes, quiz and private notes. Save.
-2. Make video. This uses Windows System.Speech narration plus FFmpeg to create a 720p MP4, WebVTT captions and transcript.
-3. Preview the saved HTML exploration and review the video/answer key. Select demo students, due date and help level, check review and assign.
-4. Open a student's private link. Explore the fraction bars, watch the video, ask for help, save or submit work.
-5. Return to Assignments and Questions & support. Refresh to see exact questions/replies, reasoning, submission state and feedback. Draft a follow-up from an actual exchange.
-
-Published assignment content is a snapshot; future edits cannot change it. Video is included only if ready at publication. Regenerated content requires a new reviewed assignment.
-
-## Scope and boundaries
-
-This is a **single-teacher, synthetic, loopback-only prototype**, not a school deployment. Four named demo learners, no real roster import. HTML visuals currently support unit fractions with equal-sized wholes; AI can adapt the theme/script within that format, not generate arbitrary subject simulations.
-
-Student capability links are reusable demo credentials. Tokens live in a private local access.json and in the signed-in tab's sessionStorage; URLs place them in the fragment, which is cleared after sign-in. Student tokens cannot read teacher notes, answer keys, other students' work, or teacher APIs. Use one tab per role. Authentication is enforced by the server. No student path reaches Hermes shell, filesystem, tool or agent execution.
-
-Generated lesson content is escaped inside a controlled template and runs in a sandboxed iframe without same-origin authority or network access. The app does not accept arbitrary executable HTML from a model. Teacher-approved text and source context remain important: tutoring instructions cannot guarantee that a model never reveals an answer.
-
-Optional AI configuration is server-only:
-```json
-{"ai":{"baseUrl":"https://model.example.com/v1","model":"approved-model"},"media":{"ffmpeg":"C:/path/ffmpeg.exe","powershell":"C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"}}
-```
-An optional secret is read from `CHALKLINE_AI_KEY`. Model requests are serialized in this service, contain only the assigned lesson and this student's last three exchanges, and have no tools. AI failure yields a clearly labeled saved lesson hint; teacher-only help never invokes the model. Draft generation fails visibly and preserves the editable lesson.
-
-Question grouping uses keyword rules and unique-student counts, not inferred diagnoses or automatic grades. Work only saves when the student selects Save or Turn in. Submitted work is locked in this prototype; teachers can send feedback.
-
-Before real pupils or access from another device: district-approved identity/consent and retention design, HTTPS, per-school/class authorization, backups/encryption, deployment operations, model/pedagogical evaluation and accessibility review. No production rollout is implied by this local prototype.
-
-## Verification
-
-`node --test test/*.test.mjs` exercises actual HTTP authorization, assignment immutability, draft conflict handling, durable work/help/feedback, content escaping, and restricted tutor context. `node test/browser-check.mjs` exercises real browser teacher/student flows after installing this package's development dependencies. Browser artifacts go under ignored artifacts/.
-
-## Verified on 2026-10-03
-
-- Three actual-HTTP/backend tests passed: role and assignment isolation, immutable published versions, optimistic draft conflict detection, durable work/help/feedback, private-data exclusion, origin/content checks, and restricted tutor context.
-- Real browser flow passed: teacher edit/preview/publish, live sandboxed fraction slider, student help preserving unfinished work, save/reload/submit, teacher feedback, source question review, follow-up draft and 390px mobile layout. Screenshots are in ignored artifacts/.
-- Live local service rendered and delivered a 1280x720 H.264/AAC narrated MP4 with an English caption track (about 37 seconds). Playback succeeded in separate teacher and student browser sessions. Rendering uses direct -vf arguments, compatible with the bundled FFmpeg 9; it does not use the removed filter_script option.
-- A real configured model returned a student explanation. AI authoring also returned a valid soccer-field lesson draft. Early connection timeout exercised the explicitly labeled saved-hint behavior; no silent simulated AI response is used.
-- The native access component test, renderer TypeScript check and scoped Chalkline lint passed. Native visual inspection is separate from these browser checks.
-
-The default runtime state is the ignored `data/` directory. No Windows startup task, fleet route or public deployment is created.
+Before real pupils: the responsible school must settle identity and data responsibilities, retention/deletion, accessibility, model/content evaluation, incident support and deployment operations. No district connection or real-student approval is implied by this release.

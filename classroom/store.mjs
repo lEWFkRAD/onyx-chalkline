@@ -3,34 +3,26 @@ import { randomBytes, createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { seedLesson, publicLesson, validateLesson } from './lesson.mjs'
+import { newPassword, normalizeUsername, passwordRecord, checkPassword } from './identity.mjs'
 export const hash = value => createHash('sha256').update(value).digest('hex')
+const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }) }
+const label = value => {
+  if (typeof value !== 'string' || !value.trim() || value.length > 100) fail('Enter a name of 1–100 characters.')
+  return value.trim()
+}
+const safeUser = a => ({ id: a.id, name: a.name, role: a.role, username: a.username })
+const defaults = [{ id: 'maya', name: 'Maya B.' }, { id: 'eli', name: 'Eli R.' }, { id: 'luis', name: 'Luis S.' }, { id: 'ava', name: 'Ava H.' }]
 export class ClassroomStore {
-  constructor(dir) {
+  constructor(dir, { now = Date.now, sessionTtlMs = 8 * 60 * 60 * 1000 } = {}) {
+    this.now = now
+    if (!Number.isSafeInteger(sessionTtlMs) || sessionTtlMs < 1 || sessionTtlMs > 30 * 86400000) throw new Error('Invalid session lifetime.')
+    this.sessionTtlMs = sessionTtlMs
     mkdirSync(dir, { recursive: true })
-    const accessPath = join(dir, 'access.json')
-    if (!existsSync(accessPath)) {
-      const token = () => randomBytes(32).toString('base64url')
-      writeFileSync(
-        accessPath,
-        JSON.stringify(
-          {
-            teacher: token(),
-            students: [
-              { id: 'maya', name: 'Maya B.', token: token() },
-              { id: 'eli', name: 'Eli R.', token: token() },
-              { id: 'luis', name: 'Luis S.', token: token() },
-              { id: 'ava', name: 'Ava H.', token: token() }
-            ]
-          },
-          null,
-          2
-        ),
-        { mode: 0o600, flag: 'wx' }
-      )
-    }
-    this.access = JSON.parse(readFileSync(accessPath, 'utf8'))
     this.db = new DatabaseSync(join(dir, 'classroom.sqlite'))
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+    try {
+    const version = this.db.prepare('PRAGMA user_version').get().user_version
+    if (version > 2) throw new Error('This classroom database needs a newer application.')
+    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS draft(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS assignments(id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, revision INTEGER NOT NULL, due TEXT NOT NULL, mode TEXT NOT NULL, created TEXT NOT NULL, media TEXT);
       CREATE TABLE IF NOT EXISTS memberships(assignment TEXT NOT NULL REFERENCES assignments(id), student TEXT NOT NULL, PRIMARY KEY(assignment,student));
@@ -38,151 +30,324 @@ export class ClassroomStore {
       CREATE TABLE IF NOT EXISTS help(id TEXT PRIMARY KEY, assignment TEXT NOT NULL, student TEXT NOT NULL, question TEXT NOT NULL, reply TEXT NOT NULL, engine TEXT NOT NULL, topic TEXT NOT NULL, created TEXT NOT NULL, FOREIGN KEY(assignment,student) REFERENCES memberships(assignment,student));
       CREATE TABLE IF NOT EXISTS media(revision INTEGER PRIMARY KEY, status TEXT NOT NULL, detail TEXT NOT NULL, asset TEXT);
     `)
-    this.db.prepare('INSERT OR IGNORE INTO draft VALUES(1,1,?)').run(JSON.stringify(seedLesson))
+    if (version < 2) this._migrate(dir)
+    const bootstrapPath = join(dir, 'bootstrap.json')
+    this.bootstrap = existsSync(bootstrapPath) ? JSON.parse(readFileSync(bootstrapPath, 'utf8')) : null
+    } catch (error) { this.db.close(); throw error }
   }
-  principal(token) {
-    if (!token) return null
-    const digest = hash(token)
-    if (digest === hash(this.access.teacher)) return { role: 'teacher', id: 'teacher', name: 'Jamie' }
-    const s = this.access.students.find(s => hash(s.token) === digest)
-    return s ? { role: 'student', id: s.id, name: s.name } : null
-  }
-  draft() {
-    const row = this.db.prepare('SELECT * FROM draft WHERE id=1').get()
-    return { revision: row.revision, lesson: JSON.parse(row.body) }
-  }
-  save(lesson, revision) {
-    const body = JSON.stringify(validateLesson(lesson))
-    const result = this.db
-      .prepare('UPDATE draft SET body=?,revision=revision+1 WHERE id=1 AND revision=?')
-      .run(body, revision)
-    if (!result.changes)
-      throw Object.assign(new Error('This draft changed in another window. Reload before saving.'), { status: 409 })
-    return this.draft()
-  }
-  publish({ revision, students, due, mode, reviewed }) {
-    const draft = this.draft()
-    if (reviewed !== true || draft.revision !== revision)
-      throw Object.assign(new Error('Preview and approve the current saved version first.'), { status: 409 })
-    if (!Array.isArray(students) || !students.length || students.some(s => !this.access.students.some(p => p.id === s)))
-      throw new Error('Choose valid demo students.')
-    if (!['hints', 'examples', 'teacher'].includes(mode)) throw new Error('Choose an assistance level.')
-    if (
-      typeof due !== 'string' ||
-      !/^\d{4}-\d{2}-\d{2}$/.test(due) ||
-      Number.isNaN(Date.parse(due)) ||
-      new Date(due).toISOString().slice(0, 10) !== due
-    )
-      throw new Error('Choose a due date.')
-    const id = randomUUID()
-    const media =
-      this.db.prepare("SELECT asset FROM media WHERE revision=? AND status='ready'").get(revision)?.asset || null
+  _stamp() { return new Date(this.now()).toISOString() }
+  _transaction(fn) {
     this.db.exec('BEGIN IMMEDIATE')
-    try {
-      this.db
-        .prepare('INSERT INTO assignments VALUES(?,?,?,?,?,?,?,?)')
-        .run(id, draft.lesson.title, JSON.stringify(draft.lesson), revision, due, mode, new Date().toISOString(), media)
-      const add = this.db.prepare('INSERT INTO memberships VALUES(?,?)')
-      for (const s of new Set(students)) add.run(id, s)
-      this.db.exec('COMMIT')
-    } catch (e) {
-      this.db.exec('ROLLBACK')
-      throw e
-    }
-    return { id }
+    try { const result = fn(); this.db.exec('COMMIT'); return result } catch (error) { try { this.db.exec('ROLLBACK') } catch { /* SQLite may already have rolled back. */ } throw error }
   }
-  assignment(id, principal) {
-    const row = this.db.prepare('SELECT * FROM assignments WHERE id=?').get(id)
-    if (
-      !row ||
-      (principal.role !== 'teacher' &&
-        !this.db.prepare('SELECT 1 FROM memberships WHERE assignment=? AND student=?').get(id, principal.id))
-    )
-      throw Object.assign(new Error('Assignment not found.'), { status: 404 })
-    return { ...row, lesson: JSON.parse(row.body) }
+  _migrate(dir) {
+    this._transaction(() => {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('teacher','student')), username TEXT NOT NULL UNIQUE COLLATE NOCASE, salt TEXT NOT NULL, password_hash TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS classes(id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES accounts(id), name TEXT NOT NULL, created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS class_memberships(class_id TEXT NOT NULL REFERENCES classes(id), student TEXT NOT NULL REFERENCES accounts(id), active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(class_id,student));
+        CREATE TABLE IF NOT EXISTS sessions(digest TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES accounts(id), expires INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS class_drafts(class_id TEXT PRIMARY KEY REFERENCES classes(id), revision INTEGER NOT NULL UNIQUE, body TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS lesson_versions(revision INTEGER PRIMARY KEY AUTOINCREMENT, class_id TEXT NOT NULL REFERENCES classes(id), body TEXT, created TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS requests(actor TEXT NOT NULL, kind TEXT NOT NULL, request_id TEXT NOT NULL, fingerprint TEXT NOT NULL, response TEXT NOT NULL, created TEXT NOT NULL, PRIMARY KEY(actor,kind,request_id));
+        CREATE TABLE IF NOT EXISTS audit(id TEXT PRIMARY KEY, actor TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL, class_id TEXT, created TEXT NOT NULL);
+        CREATE INDEX IF NOT EXISTS sessions_user ON sessions(user_id);
+        CREATE INDEX IF NOT EXISTS help_assignment ON help(assignment,student,created);
+      `)
+      for (const [table, column, definition] of [['assignments', 'class_id', "TEXT NOT NULL DEFAULT 'demo-class'"], ['media', 'class_id', "TEXT NOT NULL DEFAULT 'demo-class'"], ['work', 'revision', 'INTEGER NOT NULL DEFAULT 0']]) {
+        if (!this.db.prepare('PRAGMA table_info(' + table + ')').all().some(r => r.name === column)) this.db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition)
+      }
+      if (!this.db.prepare('SELECT 1 FROM accounts LIMIT 1').get()) {
+        let legacy = null
+        const accessPath = join(dir, 'access.json')
+        if (existsSync(accessPath)) legacy = JSON.parse(readFileSync(accessPath, 'utf8'))
+        const students = defaults.map(s => ({ ...s, name: legacy?.students?.find(old => old.id === s.id)?.name || s.name, username: s.id, password: newPassword() }))
+        const teacher = { id: 'teacher', name: 'Jamie', username: 'teacher', password: newPassword() }
+        this._insertAccount({ ...teacher, role: 'teacher' })
+        for (const s of students) this._insertAccount({ ...s, role: 'student' })
+        this.db.prepare('INSERT INTO classes VALUES(?,?,?,?)').run('demo-class', 'teacher', 'Grade 3 demo class', this._stamp())
+        for (const s of students) this.db.prepare('INSERT INTO class_memberships VALUES(?,?,1)').run('demo-class', s.id)
+        this.db.prepare('INSERT OR IGNORE INTO draft VALUES(1,1,?)').run(JSON.stringify(seedLesson))
+        const draft = this.db.prepare('SELECT revision,body FROM draft WHERE id=1').get()
+        this.db.prepare('INSERT INTO class_drafts VALUES(?,?,?)').run('demo-class', draft.revision, draft.body)
+        this.db.prepare('INSERT OR IGNORE INTO lesson_versions VALUES(?,?,?,?)').run(draft.revision, 'demo-class', draft.body, this._stamp())
+        for (const a of this.db.prepare('SELECT revision,body,created FROM assignments').all()) this.db.prepare('INSERT OR IGNORE INTO lesson_versions VALUES(?,?,?,?)').run(a.revision, 'demo-class', a.body, a.created)
+        for (const m of this.db.prepare('SELECT revision FROM media').all()) this.db.prepare('INSERT OR IGNORE INTO lesson_versions VALUES(?,?,NULL,?)').run(m.revision, 'demo-class', this._stamp())
+        writeFileSync(join(dir, 'bootstrap.json'), JSON.stringify({ createdAt: this._stamp(), teacher, students }, null, 2), { mode: 0o600 })
+        this._audit('operator', 'migration-v2', 'demo-class', 'demo-class')
+      }
+      this.db.exec('PRAGMA user_version=2')
+    })
   }
-  state(p) {
-    const list = this.db
-      .prepare(
-        p.role === 'teacher'
-          ? 'SELECT * FROM assignments ORDER BY created DESC'
-          : 'SELECT a.* FROM assignments a JOIN memberships m ON a.id=m.assignment WHERE m.student=? ORDER BY a.created DESC'
-      )
-      .all(...(p.role === 'teacher' ? [] : [p.id]))
-    const assignments = list.map(a => ({
-      id: a.id,
-      title: a.title,
-      revision: a.revision,
-      due: a.due,
-      mode: a.mode,
-      created: a.created,
-      media: a.media,
-      lesson: publicLesson(JSON.parse(a.body)),
-      work: this.db
-        .prepare('SELECT * FROM work WHERE assignment=?' + (p.role === 'teacher' ? '' : ' AND student=?'))
-        .all(...(p.role === 'teacher' ? [a.id] : [a.id, p.id])),
-      help: this.db
-        .prepare(
-          'SELECT * FROM help WHERE assignment=?' + (p.role === 'teacher' ? '' : ' AND student=?') + ' ORDER BY created'
-        )
-        .all(...(p.role === 'teacher' ? [a.id] : [a.id, p.id])),
-      answerKey: p.role === 'teacher' ? JSON.parse(a.body).correctIndex : undefined,
-      teacherNotes: p.role === 'teacher' ? JSON.parse(a.body).teacherNotes : undefined,
-      students:
-        p.role === 'teacher'
-          ? this.db
-              .prepare('SELECT student FROM memberships WHERE assignment=?')
-              .all(a.id)
-              .map(s => s.student)
-          : undefined
-    }))
-    return {
-      user: p,
-      assignments,
-      ...(p.role === 'teacher'
-        ? {
-            draft: this.draft(),
-            students: this.access.students.map(({ id, name }) => ({ id, name })),
-            media: this.db.prepare('SELECT * FROM media ORDER BY revision DESC LIMIT 8').all()
-          }
-        : {})
-    }
+  _insertAccount({ id = randomUUID(), name, username, password, role }) {
+    name = label(name); username = normalizeUsername(username)
+    if (this.db.prepare('SELECT 1 FROM accounts WHERE username=?').get(username)) fail('That username is already in use.', 409)
+    const record = passwordRecord(password)
+    this.db.prepare('INSERT INTO accounts(id,name,role,username,salt,password_hash,created) VALUES(?,?,?,?,?,?,?)').run(id, name, role, username, record.salt, record.password_hash, this._stamp())
+    return { id, name, username, role }
   }
-  saveWork(p, { assignmentId, answer, reasoning, submit }) {
-    this.assignment(assignmentId, p)
-    if (answer !== null && (!Number.isInteger(answer) || answer < 0 || answer > 2))
-      throw new Error('Choose one answer.')
-    if (typeof reasoning !== 'string' || reasoning.length > 3000)
-      throw new Error('Keep your explanation under 3,000 characters.')
-    if (submit && (answer === null || !reasoning.trim()))
-      throw new Error('Choose an answer and explain your thinking before submitting.')
-    const old = this.db.prepare('SELECT submitted FROM work WHERE assignment=? AND student=?').get(assignmentId, p.id)
-    if (old?.submitted)
-      throw Object.assign(new Error('Already submitted. Your teacher can review this work.'), { status: 409 })
-    this.db
-      .prepare(
-        `INSERT INTO work(assignment,student,answer,reasoning,submitted) VALUES(?,?,?,?,?)
-      ON CONFLICT(assignment,student) DO UPDATE SET answer=excluded.answer,reasoning=excluded.reasoning,submitted=excluded.submitted`
-      )
-      .run(assignmentId, p.id, answer, reasoning, submit ? new Date().toISOString() : null)
-    return { saved: true }
+  _audit(actor, action, target, classId = null) { this.db.prepare('INSERT INTO audit VALUES(?,?,?,?,?,?)').run(randomUUID(), actor, action, target, classId, this._stamp()) }
+  _actor(p, role) {
+    const account = p && this.db.prepare('SELECT * FROM accounts WHERE id=? AND active=1').get(p.id)
+    if (!account || account.role !== p.role) fail('Sign in again.', 401)
+    if (role && account.role !== role) fail(role === 'teacher' ? 'Teacher access required.' : 'Student access required.', 403)
+    return account
   }
-  addHelp(p, assignment, question, result) {
-    const row = { id: randomUUID(), assignment, student: p.id, question, ...result, created: new Date().toISOString() }
-    this.db
-      .prepare('INSERT INTO help VALUES(?,?,?,?,?,?,?,?)')
-      .run(row.id, assignment, p.id, question, row.reply, row.engine, row.topic, row.created)
+  _class(p, classId) {
+    this._actor(p)
+    const row = classId
+      ? this.db.prepare('SELECT * FROM classes WHERE id=?').get(classId)
+      : this.db.prepare(p.role === 'teacher' ? 'SELECT * FROM classes WHERE owner=? ORDER BY created,id LIMIT 1' : 'SELECT c.* FROM classes c JOIN class_memberships m ON c.id=m.class_id WHERE m.student=? AND m.active=1 ORDER BY c.created,c.id LIMIT 1').get(p.id)
+    if (!row || (p.role === 'teacher' ? row.owner !== p.id : !this.db.prepare('SELECT 1 FROM class_memberships WHERE class_id=? AND student=? AND active=1').get(row.id, p.id))) fail('Class not found.', 404)
     return row
   }
-  feedback({ assignmentId, studentId, feedback }) {
-    if (typeof feedback !== 'string' || feedback.length > 3000) throw new Error('Keep feedback under 3,000 characters.')
-    const result = this.db
-      .prepare('UPDATE work SET feedback=? WHERE assignment=? AND student=?')
-      .run(feedback, assignmentId, studentId)
-    if (!result.changes) throw Object.assign(new Error('There is no saved work for this student yet.'), { status: 404 })
+  async login({ username, password } = {}) {
+    let normalized = ''
+    try { normalized = normalizeUsername(username) } catch { /* Generic authentication failure. */ }
+    const account = normalized ? this.db.prepare('SELECT * FROM accounts WHERE username=?').get(normalized) : null
+    const valid = await checkPassword(password, account)
+    const fresh = account && this.db.prepare('SELECT * FROM accounts WHERE id=? AND active=1').get(account.id)
+    if (!valid || !fresh || fresh.password_hash !== account.password_hash) fail('Username or password is incorrect.', 401)
+    const token = randomBytes(32).toString('base64url'), expires = this.now() + this.sessionTtlMs
+    this.db.prepare('INSERT INTO sessions VALUES(?,?,?,0,?)').run(hash(token), fresh.id, expires, this._stamp())
+    return { token, expiresAt: new Date(expires).toISOString(), user: safeUser(fresh) }
+  }
+  principal(token) {
+    if (typeof token !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(token)) return null
+    const row = this.db.prepare('SELECT a.*,s.digest AS session_id FROM sessions s JOIN accounts a ON a.id=s.user_id WHERE s.digest=? AND s.revoked=0 AND s.expires>? AND a.active=1').get(hash(token), this.now())
+    return row ? { ...safeUser(row), sessionId: row.session_id } : null
+  }
+  logout(token) {
+    if (typeof token === 'string' && token.length <= 256) this.db.prepare('UPDATE sessions SET revoked=1 WHERE digest=?').run(hash(token))
+    return { signedOut: true }
+  }
+  async changePassword(p, { currentPassword, newPassword: replacement } = {}) {
+    const account = this._actor(p), record = passwordRecord(replacement)
+    if (!(await checkPassword(currentPassword, account))) fail('Current password is incorrect.', 403)
+    return this._transaction(() => {
+      if (p.sessionId && !this.db.prepare('SELECT 1 FROM sessions WHERE digest=? AND user_id=? AND revoked=0 AND expires>?').get(p.sessionId,p.id,this.now())) fail('Your session ended. Sign in again.',401)
+      const fresh = this._actor(p)
+      if (fresh.password_hash !== account.password_hash) fail('Your account changed. Sign in again.', 409)
+      this.db.prepare('UPDATE accounts SET salt=?,password_hash=? WHERE id=?').run(record.salt, record.password_hash, p.id)
+      this.db.prepare('UPDATE sessions SET revoked=1 WHERE user_id=?').run(p.id)
+      this._audit(p.id, 'password-changed', p.id)
+      return { saved: true }
+    })
+  }
+  createTeacher({ name, username, password }) {
+    return this._transaction(() => {
+      const account = this._insertAccount({ name, username, password, role: 'teacher' })
+      this._newClass(account, label(name).slice(0, 85) + "'s class")
+      this._audit('operator', 'teacher-created', account.id)
+      return account
+    })
+  }
+  resetTeacherCredentials({ username, password }) {
+    username = normalizeUsername(username)
+    const record = passwordRecord(password)
+    return this._transaction(() => {
+      const account = this.db.prepare("SELECT * FROM accounts WHERE username=? AND role='teacher' AND active=1").get(username)
+      if (!account) fail('Teacher account not found.', 404)
+      this.db.prepare('UPDATE accounts SET salt=?,password_hash=? WHERE id=?').run(record.salt, record.password_hash, account.id)
+      this.db.prepare('UPDATE sessions SET revoked=1 WHERE user_id=?').run(account.id)
+      this._audit('operator', 'teacher-password-reset', account.id)
+      return safeUser(account)
+    })
+  }
+  _newVersion(classId, lesson) {
+    const body = JSON.stringify(lesson)
+    const result = this.db.prepare('INSERT INTO lesson_versions(class_id,body,created) VALUES(?,?,?)').run(classId, body, this._stamp())
+    const revision = Number(result.lastInsertRowid)
+    this.db.prepare('INSERT INTO class_drafts VALUES(?,?,?) ON CONFLICT(class_id) DO UPDATE SET revision=excluded.revision,body=excluded.body').run(classId, revision, body)
+    return { revision, lesson }
+  }
+  _newClass(p, name) {
+    const row = { id: randomUUID(), name: label(name), owner: p.id, created: this._stamp() }
+    this.db.prepare('INSERT INTO classes VALUES(?,?,?,?)').run(row.id, row.owner, row.name, row.created)
+    this._newVersion(row.id, seedLesson)
+    this._audit(p.id, 'class-created', row.id, row.id)
+    return row
+  }
+  createClass(p, { name }) { this._actor(p, 'teacher'); return this._transaction(() => this._newClass(p, name)) }
+  addStudent(p, { classId, name, username }) {
+    this._actor(p, 'teacher'); const classroom = this._class(p, classId), password = newPassword()
+    return this._transaction(() => {
+      const account = this._insertAccount({ name, username, password, role: 'student' })
+      this.db.prepare('INSERT INTO class_memberships VALUES(?,?,1)').run(classroom.id, account.id)
+      this._audit(p.id, 'student-created', account.id, classroom.id)
+      return { student: { ...account, active: true }, credentials: { username: account.username, password } }
+    })
+  }
+  _student(p, classId, studentId) {
+    this._actor(p, 'teacher'); const classroom = this._class(p, classId)
+    const student = this.db.prepare("SELECT a.* FROM accounts a JOIN class_memberships m ON m.student=a.id WHERE m.class_id=? AND a.id=? AND a.role='student' AND a.active=1 AND m.active=1").get(classroom.id, studentId)
+    if (!student) fail('Student not found.', 404)
+    return { classroom, student }
+  }
+  resetStudent(p, { classId, studentId }) {
+    const { classroom, student } = this._student(p, classId, studentId), password = newPassword(), record = passwordRecord(password)
+    return this._transaction(() => {
+      this.db.prepare('UPDATE accounts SET salt=?,password_hash=? WHERE id=?').run(record.salt, record.password_hash, student.id)
+      this.db.prepare('UPDATE sessions SET revoked=1 WHERE user_id=?').run(student.id)
+      this._audit(p.id, 'student-password-reset', student.id, classroom.id)
+      return { username: student.username, password }
+    })
+  }
+  removeStudent(p, { classId, studentId }) {
+    const { classroom, student } = this._student(p, classId, studentId)
+    return this._transaction(() => {
+      this.db.prepare('UPDATE class_memberships SET active=0 WHERE class_id=? AND student=?').run(classroom.id, student.id)
+      if (!this.db.prepare('SELECT 1 FROM class_memberships WHERE student=? AND active=1').get(student.id)) this.db.prepare('UPDATE accounts SET active=0 WHERE id=?').run(student.id)
+      this.db.prepare('UPDATE sessions SET revoked=1 WHERE user_id=?').run(student.id)
+      this._audit(p.id, 'student-removed', student.id, classroom.id)
+      return { removed: true }
+    })
+  }
+  _requestKey(requestId) {
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9_-]{16,80}$/.test(requestId)) fail('A valid request ID is required.')
+    return requestId
+  }
+  _remember(p, kind, requestId, payload, operation) {
+    this._requestKey(requestId)
+    const fingerprint = hash(JSON.stringify(payload))
+    return this._transaction(() => {
+      const old = this.db.prepare('SELECT * FROM requests WHERE actor=? AND kind=? AND request_id=?').get(p.id, kind, requestId)
+      if (old) {
+        if (old.fingerprint !== fingerprint) fail('This request ID was already used for different content.', 409)
+        return JSON.parse(old.response)
+      }
+      const result = operation()
+      this.db.prepare('INSERT INTO requests VALUES(?,?,?,?,?,?)').run(p.id, kind, requestId, fingerprint, JSON.stringify(result), this._stamp())
+      return result
+    })
+  }
+  draft(p, classId) {
+    this._actor(p, 'teacher'); const classroom = this._class(p, classId)
+    const row = this.db.prepare('SELECT * FROM class_drafts WHERE class_id=?').get(classroom.id)
+    return { classId: classroom.id, revision: row.revision, lesson: JSON.parse(row.body) }
+  }
+  save(p, { classId, lesson, revision }) {
+    this._actor(p, 'teacher'); const classroom = this._class(p, classId), clean = validateLesson(lesson)
+    return this._transaction(() => {
+      const current = this.draft(p, classroom.id)
+      if (current.revision !== revision) fail('This draft changed in another window. Reload before saving.', 409)
+      return { classId: classroom.id, ...this._newVersion(classroom.id, clean) }
+    })
+  }
+  publish(p, { classId, revision, students, due, mode, reviewed, requestId }) {
+    this._actor(p, 'teacher'); const classroom = this._class(p, classId)
+    return this._remember(p, 'publish', requestId, { classId: classroom.id, revision, students, due, mode, reviewed }, () => {
+      const draft = this.draft(p, classroom.id)
+      if (reviewed !== true || draft.revision !== revision) fail('Preview and approve the current saved version first.', 409)
+      if (!Array.isArray(students) || !students.length || students.length > 500 || students.some(id => typeof id !== 'string' || !this.db.prepare('SELECT 1 FROM class_memberships m JOIN accounts a ON a.id=m.student WHERE m.class_id=? AND m.student=? AND m.active=1 AND a.active=1').get(classroom.id, id))) fail('Choose active students in this class.')
+      if (!['hints', 'examples', 'teacher'].includes(mode)) fail('Choose an assistance level.')
+      if (typeof due !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(due) || Number.isNaN(Date.parse(due)) || new Date(due).toISOString().slice(0, 10) !== due) fail('Choose a due date.')
+      const id = randomUUID(), media = this.db.prepare("SELECT asset FROM media WHERE revision=? AND class_id=? AND status='ready'").get(revision, classroom.id)?.asset || null
+      this.db.prepare('INSERT INTO assignments(id,title,body,revision,due,mode,created,media,class_id) VALUES(?,?,?,?,?,?,?,?,?)').run(id, draft.lesson.title, JSON.stringify(draft.lesson), revision, due, mode, this._stamp(), media, classroom.id)
+      for (const student of new Set(students)) this.db.prepare('INSERT INTO memberships VALUES(?,?)').run(id, student)
+      return { id }
+    })
+  }
+  assignment(id, p) {
+    this._actor(p)
+    const row = this.db.prepare('SELECT a.* FROM assignments a JOIN classes c ON c.id=a.class_id WHERE a.id=? AND ' + (p.role === 'teacher' ? 'c.owner=?' : 'EXISTS(SELECT 1 FROM memberships m JOIN class_memberships cm ON cm.student=m.student AND cm.class_id=a.class_id WHERE m.assignment=a.id AND m.student=? AND cm.active=1)')).get(id, p.id)
+    if (!row) fail('Assignment not found.', 404)
+    const result = { ...row, classId: row.class_id, lesson: p.role === 'teacher' ? JSON.parse(row.body) : publicLesson(JSON.parse(row.body)) }
+    delete result.body
+    return result
+  }
+  saveWork(p, { assignmentId, answer, reasoning, submit = false, revision = 0, requestId }) {
+    this._actor(p, 'student'); this.assignment(assignmentId, p)
+    return this._remember(p, 'work', requestId, { assignmentId, answer, reasoning, submit, revision }, () => {
+      if (answer !== null && (!Number.isInteger(answer) || answer < 0 || answer > 2)) fail('Choose one answer.')
+      if (typeof reasoning !== 'string' || reasoning.length > 3000) fail('Keep your explanation under 3,000 characters.')
+      if (typeof submit !== 'boolean') fail('Choose whether to submit the work.')
+      if (!Number.isSafeInteger(revision) || revision < 0) fail('Reload the current saved work.')
+      if (submit && (answer === null || !reasoning.trim())) fail('Choose an answer and explain your thinking before submitting.')
+      const old = this.db.prepare('SELECT * FROM work WHERE assignment=? AND student=?').get(assignmentId, p.id)
+      if (old?.submitted) fail('Already submitted. Your teacher can review this work.', 409)
+      if ((old?.revision || 0) !== revision) fail('Your work changed in another window. Reload before saving.', 409)
+      const next = revision + 1, submitted = submit ? this._stamp() : null
+      this.db.prepare(`INSERT INTO work(assignment,student,answer,reasoning,submitted,revision) VALUES(?,?,?,?,?,?) ON CONFLICT(assignment,student) DO UPDATE SET answer=excluded.answer,reasoning=excluded.reasoning,submitted=excluded.submitted,revision=excluded.revision`).run(assignmentId, p.id, answer, reasoning, submitted, next)
+      return { saved: true, revision: next, submitted }
+    })
+  }
+  feedback(p, { assignmentId, studentId, feedback }) {
+    this._actor(p, 'teacher'); this.assignment(assignmentId, p)
+    if (typeof feedback !== 'string' || feedback.length > 3000) fail('Keep feedback under 3,000 characters.')
+    const result = this.db.prepare('UPDATE work SET feedback=? WHERE assignment=? AND student=?').run(feedback, assignmentId, studentId)
+    if (!result.changes) fail('There is no saved work for this student yet.', 404)
     return { saved: true }
   }
-  close() {
-    this.db.close()
+  getHelpByRequest(p, assignmentId, requestId) {
+    this._actor(p, 'student'); this.assignment(assignmentId, p); this._requestKey(requestId)
+    const old = this.db.prepare("SELECT response FROM requests WHERE actor=? AND kind='help' AND request_id=?").get(p.id, requestId)
+    if (!old) return null
+    const row = JSON.parse(old.response)
+    if (row.assignment !== assignmentId) fail('This request ID was already used for another assignment.', 409)
+    return row
   }
+  addHelp(p, assignmentId, question, result, requestId) {
+    this._actor(p, 'student'); this.assignment(assignmentId, p)
+    if (typeof question !== 'string' || !question.trim() || question.length > 1200) fail('Ask a question in up to 1,200 characters.')
+    return this._remember(p, 'help', requestId, { assignmentId, question: question.trim() }, () => {
+      if (!result || typeof result.reply !== 'string' || result.reply.length > 12000 || typeof result.engine !== 'string' || result.engine.length > 100 || typeof result.topic !== 'string' || result.topic.length > 200) fail('Invalid help response.')
+      const row = { id: randomUUID(), assignment: assignmentId, student: p.id, question: question.trim(), reply: result.reply, engine: result.engine, topic: result.topic, created: this._stamp() }
+      this.db.prepare('INSERT INTO help VALUES(?,?,?,?,?,?,?,?)').run(row.id, assignmentId, p.id, row.question, row.reply, row.engine, row.topic, row.created)
+      return row
+    })
+  }
+  listHelp(p, assignmentId, limit = 100) {
+    this.assignment(assignmentId, p)
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) fail('Invalid help history limit.')
+    const sql = 'SELECT * FROM help WHERE assignment=?' + (p.role === 'teacher' ? '' : ' AND student=?') + ' ORDER BY created DESC,rowid DESC LIMIT ?'
+    return this.db.prepare(sql).all(...(p.role === 'teacher' ? [assignmentId, limit] : [assignmentId, p.id, limit])).reverse()
+  }
+  getMedia(p, { classId, revision }) {
+    this._actor(p, 'teacher'); const classroom = this._class(p, classId)
+    return this.db.prepare('SELECT * FROM media WHERE revision=? AND class_id=?').get(revision, classroom.id) || null
+  }
+  saveMedia(p, { classId, revision, status, detail, asset = null }) {
+    this._actor(p, 'teacher'); const classroom = this._class(p, classId)
+    if (!['rendering', 'ready', 'error'].includes(status) || typeof detail !== 'string' || detail.length > 1500) fail('Invalid video status.')
+    if ((status === 'ready' && asset !== 'lesson-' + revision) || (asset !== null && asset !== 'lesson-' + revision)) fail('Invalid video asset.')
+    const existing = this.getMedia(p, { classId: classroom.id, revision })
+    const version = this.db.prepare('SELECT 1 FROM lesson_versions WHERE revision=? AND class_id=?').get(revision, classroom.id)
+    if (!version || (!existing && this.draft(p, classroom.id).revision !== revision)) fail('Save and reload the current lesson before making the video.', 409)
+    this.db.prepare('INSERT INTO media(revision,status,detail,asset,class_id) VALUES(?,?,?,?,?) ON CONFLICT(revision) DO UPDATE SET status=excluded.status,detail=excluded.detail,asset=excluded.asset').run(revision, status, detail, asset, classroom.id)
+    return this.getMedia(p, { classId: classroom.id, revision })
+  }
+  canAccessAsset(p, asset) {
+    this._actor(p)
+    if (typeof asset !== 'string' || !/^lesson-\d+$/.test(asset)) return false
+    if (p.role === 'teacher') return Boolean(this.db.prepare("SELECT 1 FROM media m JOIN classes c ON c.id=m.class_id WHERE m.asset=? AND m.status='ready' AND c.owner=?").get(asset, p.id))
+    return Boolean(this.db.prepare("SELECT 1 FROM assignments a JOIN memberships m ON m.assignment=a.id JOIN class_memberships cm ON cm.class_id=a.class_id AND cm.student=m.student JOIN media v ON v.asset=a.media AND v.class_id=a.class_id WHERE a.media=? AND m.student=? AND cm.active=1 AND v.status='ready'").get(asset, p.id))
+  }
+  state(p, classId) {
+    const account = this._actor(p), classroom = this._class(p, classId)
+    const classes = this.db.prepare(p.role === 'teacher'
+      ? 'SELECT c.*,(SELECT COUNT(*) FROM class_memberships m WHERE m.class_id=c.id AND m.active=1) AS studentCount FROM classes c WHERE c.owner=? ORDER BY c.created,c.id'
+      : 'SELECT c.* FROM classes c JOIN class_memberships m ON m.class_id=c.id WHERE m.student=? AND m.active=1 ORDER BY c.created,c.id').all(p.id)
+    const rows = this.db.prepare('SELECT a.id FROM assignments a WHERE a.class_id=?' + (p.role === 'teacher' ? '' : ' AND EXISTS(SELECT 1 FROM memberships m WHERE m.assignment=a.id AND m.student=?)') + ' ORDER BY a.created DESC,a.rowid DESC').all(...(p.role === 'teacher' ? [classroom.id] : [classroom.id, p.id]))
+    const assignments = rows.map(({ id }) => {
+      const a = this.assignment(id, p), lesson = a.lesson
+      return {
+        id: a.id, classId: a.classId, title: a.title, revision: a.revision, due: a.due, mode: a.mode, created: a.created, media: a.media, lesson: publicLesson(lesson),
+        work: this.db.prepare('SELECT * FROM work WHERE assignment=?' + (p.role === 'teacher' ? '' : ' AND student=?')).all(...(p.role === 'teacher' ? [a.id] : [a.id, p.id])),
+        help: this.listHelp(p, a.id, 1000),
+        ...(p.role === 'teacher' ? { answerKey: lesson.correctIndex, teacherNotes: lesson.teacherNotes, students: this.db.prepare('SELECT student FROM memberships WHERE assignment=?').all(a.id).map(s => s.student) } : {})
+      }
+    })
+    const session = p.sessionId && this.db.prepare('SELECT expires FROM sessions WHERE digest=?').get(p.sessionId)
+    return {
+      user: safeUser(account), classes, currentClassId: classroom.id, assignments,
+      ...(session ? { expiresAt: new Date(session.expires).toISOString() } : {}),
+      ...(p.role === 'teacher' ? {
+        draft: this.draft(p, classroom.id),
+        students: this.db.prepare('SELECT a.id,a.name,a.username,m.active FROM accounts a JOIN class_memberships m ON m.student=a.id WHERE m.class_id=? ORDER BY a.name,a.id').all(classroom.id).map(s => ({ ...s, active: Boolean(s.active) })),
+        media: this.db.prepare('SELECT * FROM media WHERE class_id=? ORDER BY revision DESC LIMIT 8').all(classroom.id)
+      } : {})
+    }
+  }
+  close() { this.db.close() }
 }
