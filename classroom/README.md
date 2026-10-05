@@ -1,5 +1,7 @@
 # Chalkline connected classroom 0.2
 
+**College edition:** see [Chalkline College](COLLEGE.md) for separate course data, statistics and academic-reading modules, and its own launcher. The school workflow below remains supported.
+
 One shared classroom service for the teacher desktop and student browsers. Teachers create classes, enroll synthetic learners, review lessons and assign work. Students sign in individually, explore the lesson, ask for help, save or submit work and receive teacher feedback.
 
 The first shared release remains a **synthetic-data prototype for one school installation**. It supports multiple teacher-owned classes; it is not yet an approved real-student or multi-school service. Visual lessons currently cover Grade 3 unit fractions. Narrated video rendering currently uses Windows.

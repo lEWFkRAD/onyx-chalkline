@@ -1,4 +1,7 @@
 const root = document.querySelector('#app')
+let edition = 'school'
+const college = () => edition === 'college'
+const wording = (school, adult) => college() ? adult : school
 const E = value =>
   String(value ?? '').replace(
     /[&<>"']/g,
@@ -70,7 +73,7 @@ async function api(path, data, raw = false) {
 function scoped(path) { return path + (path.includes('?') ? '&' : '?') + 'classId=' + encodeURIComponent(currentClassId) }
 async function load() {
   const next = await api(scoped('state'))
-  state = next; currentClassId = state.currentClassId || ''
+  state = next; edition = state.edition || edition; document.body.dataset.edition = edition; currentClassId = state.currentClassId || ''
   if (state.expiresAt) scheduleExpiry(state.expiresAt)
 }
 const draftKey = id => 'chalkline:draft:' + state.user.id + ':' + id
@@ -100,7 +103,7 @@ function captureWork() {
   if (!old && answer === (a.work[0]?.answer ?? null) && reasoning === (a.work[0]?.reasoning || '')) return
   writeLocal(draftKey(selected), { answer, reasoning, revision: old?.revision ?? a.work[0]?.revision ?? 0, updatedAt: new Date().toISOString(), conflict: old?.conflict || false })
   const status = document.querySelector('#work-status')
-  if (status) status.textContent = 'Kept in this browser · Save to share your progress with your teacher.'
+  if (status) status.textContent = wording('Kept in this browser · Save to share your progress with your teacher.', 'Kept in this browser · Save to share with your instructor.')
 }
 function retryBanner(path, id) {
   return pending(path, id) ? '<div class="notice-inline retry"><p>The connection ended before we could confirm this request. Retry safely to check it.</p>' + button('retry-' + path, 'Retry ' + ({ progress: 'pending save', help: 'help request', publish: 'assignment' }[path]), 'data-id="' + E(id) + '"', true) + '</div>' : ''
@@ -119,13 +122,14 @@ function button(action, text, extra = '', secondary = false) {
   )
 }
 function login() {
+  if (college()) { root.innerHTML = collegeLogin(); return }
   root.innerHTML = '<main class="login"><div class="brand"><span class="brandmark">c</span>chalkline</div><p class="eyebrow">A little help. A new understanding.</p><h1>Learning starts together.</h1><p>Sign in to your own learning space.</p><form id="login"><label>Username<input name="username" required autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64"></label><label>Password<input name="password" required autocomplete="current-password" type="password"></label><button>Sign in</button></form><p class="notice-inline">Students: use the username and password your teacher shared. This release uses synthetic classroom accounts.</p></main>'
 }
 function shell(content) {
   const teacher = state.user.role === 'teacher', classes = state.classes || []
-  const nav = [['overview', 'Classroom'], ['studio', 'Lesson Studio'], ['assignments', 'Assignments'], ['insights', 'Questions & support'], ['classmates', 'Class & people']]
-  const picker = classes.length ? '<label class="class-picker">Your class<select id="class-select">' + classes.map(c => '<option value="' + E(c.id) + '" ' + (c.id === currentClassId ? 'selected' : '') + '>' + E(c.name) + '</option>').join('') + '</select></label>' : ''
-  root.innerHTML = '<header><div class="brand"><span class="brandmark">c</span>chalkline <span class="pill">' + (teacher ? 'Teacher' : 'Student') + '</span></div><div class="identity"><span>' + E(state.user.name) + '</span>' + button('account', 'Account', '', true) + button('logout', 'Sign out', '', true) + '</div></header>' + (teacher ? '<div class="layout"><nav aria-label="Teacher workspace">' + picker + nav.map(([id, label]) => '<button type="button" data-tab="' + id + '" class="' + (tab === id ? 'active' : '') + '" ' + (tab === id ? 'aria-current="page"' : '') + '>' + label + '</button>').join('') + '<div class="note"><b>Learning, together.</b><br>Reviewed lessons.<br>Questions worth hearing.<br><br><span class="pill">Synthetic classroom</span></div></nav><main>' : '<main class="student-main">' + picker) + content + '</main>' + (teacher ? '</div>' : '')
+  const nav = college() ? [['overview', 'Course overview'], ['studio', 'Module Studio'], ['assignments', 'Coursework'], ['insights', 'Questions & support'], ['classmates', 'Courses & enrollment']] : [['overview', 'Classroom'], ['studio', 'Lesson Studio'], ['assignments', 'Assignments'], ['insights', 'Questions & support'], ['classmates', 'Class & people']]
+  const picker = classes.length ? '<label class="class-picker">' + wording('Your class', 'Your course') + '<select id="class-select">' + classes.map(c => '<option value="' + E(c.id) + '" ' + (c.id === currentClassId ? 'selected' : '') + '>' + E(c.name) + '</option>').join('') + '</select></label>' : ''
+  root.innerHTML = '<header><div class="brand"><span class="brandmark">c</span>chalkline' + (college() ? ' <small class="college-wordmark">COLLEGE</small>' : '') + ' <span class="pill">' + (teacher ? wording('Teacher', 'Instructor') : 'Student') + '</span></div><div class="identity"><span>' + E(state.user.name) + '</span>' + button('account', 'Account', '', true) + button('logout', 'Sign out', '', true) + '</div></header>' + (teacher ? '<div class="layout"><nav aria-label="Teacher workspace">' + picker + nav.map(([id, label]) => '<button type="button" data-tab="' + id + '" class="' + (tab === id ? 'active' : '') + '" ' + (tab === id ? 'aria-current="page"' : '') + '>' + label + '</button>').join('') + (college() ? '<div class="note"><b>Learning with evidence.</b><br>Explore. Question. Reflect.<br><br><span class="pill">Fictional course demo</span></div></nav><main>' : '<div class="note"><b>Learning, together.</b><br>Reviewed lessons.<br>Questions worth hearing.<br><br><span class="pill">Synthetic classroom</span></div></nav><main>') : '<main class="student-main">' + picker) + content + '</main>' + (teacher ? '</div>' : '')
 }
 function account() {
   return head('Your account', 'Keep your workspace yours.', 'Changing your password signs out every open session, including this one.') + '<section class="panel account-panel"><p>Signed in as <b>' + E(state.user.username || state.user.name) + '</b>.</p><form id="password"><label>Current password<input type="password" name="currentPassword" autocomplete="current-password" required></label><label>New password<input type="password" name="newPassword" autocomplete="new-password" minlength="12" maxlength="256" required></label><p><small>Use at least 12 characters.</small></p><button>Change password and sign out</button></form>' + button('account-back', 'Back to my workspace', '', true) + '</section>'
@@ -134,6 +138,7 @@ function credentialCard() {
   return credentials ? '<section class="panel credential-card" aria-label="New sign-in details"><p class="eyebrow">Share privately with this student</p><h2>New sign-in details</h2><p>This password is shown only now. A password reset signs out their previous sessions.</p><label>Student username<input id="new-username" readonly value="' + E(credentials.username) + '"></label><label>Temporary student password<input id="new-password" readonly value="' + E(credentials.password) + '"></label><p><small>Sign-in page: ' + E(state.classroomUrl || location.origin) + '</small></p><div class="actions">' + button('copy-credentials', 'Copy sign-in details') + button('dismiss-credentials', 'I have saved these details', '', true) + '</div></section>' : ''
 }
 function classmates() {
+  if (college()) return collegeClassmates()
   return head('Class & people', 'A place for every learner.', 'Create a class, then share individual sign-in details privately with each learner.') + credentialCard() + '<div class="grid"><section class="panel"><h2>Your learners</h2><p class="muted">Students only see lessons assigned to them in their own classes.</p>' + studentLinks() + '</section><aside><section class="panel"><h2>Add a student</h2><form id="student-add"><label>Student name<input name="name" maxlength="100" required autocomplete="off"></label><label>Student username<input name="username" maxlength="64" minlength="3" required autocomplete="off" autocapitalize="none" spellcheck="false"></label><p><small>Use 3–64 letters, numbers, dots, underscores or dashes. A private password is created for you.</small></p><button>Create student sign-in</button></form></section><section class="panel"><h2>Start another class</h2><form id="class-create"><label>Class name<input name="name" maxlength="100" required placeholder="Grade 3 · Maple"></label><button>Create class</button></form></section></aside></div>'
 }
 function head(kicker, title, description, action = '') {
@@ -169,9 +174,10 @@ function assignmentRows() {
             '</div></div>'
         )
         .join('')
-    : '<div class="empty">Your first lesson is ready to make your own.<br>Open Lesson Studio, preview it, then assign it.</div>'
+    : '<div class="empty">' + wording('Your first lesson is ready to make your own.<br>Open Lesson Studio, preview it, then assign it.', 'Your first module is ready to adapt.<br>Open Module Studio, review it, then publish to students.') + '</div>'
 }
 function overview() {
+  if (college()) return collegeOverview()
   const questions = state.assignments.reduce((n, a) => n + a.help.length, 0),
     submitted = state.assignments.reduce((n, a) => n + a.work.filter(w => w.submitted).length, 0)
   return (
@@ -211,13 +217,14 @@ function studio() {
     m = state.media.find(m => m.revision === r)
   return (
     head(
-      'Lesson Studio',
-      'Make understanding visible.',
-      'Shape the explanation, preview it as a learner, then send a reviewed version to your class.',
+      wording('Lesson Studio', 'Module Studio'),
+      wording('Make understanding visible.', 'Build a module worth exploring.'),
+      wording('Shape the explanation, preview it as a learner, then send a reviewed version to your class.', 'Prepare the explanation, readings, and assessment. Preview the saved module before publishing it.'),
       '<span class="pill" id="save-status">' + (dirty ? 'Unsaved changes' : 'Saved version ' + r) + '</span>'
     ) +
-    '<div class="grid"><div><section class="panel"><p class="eyebrow">Start with an idea</p><h2>A familiar world. A new concept.</h2><form id="generate"><label>How should we explain unit fractions?<textarea name="brief" placeholder="Use a soccer field to explain why one fourth is bigger than one sixth." maxlength="1800"></textarea></label><div class="actions"><button>Draft with AI</button><small>Or edit the ready-made lesson below.</small></div></form></section>' +
+    (college() ? '<div class="grid"><div>' + collegeStudioStart(l) : '<div class="grid"><div><section class="panel"><p class="eyebrow">Start with an idea</p><h2>A familiar world. A new concept.</h2><form id="generate"><label>How should we explain unit fractions?<textarea name="brief" placeholder="Use a soccer field to explain why one fourth is bigger than one sixth." maxlength="1800"></textarea></label><div class="actions"><button>Draft with AI</button><small>Or edit the ready-made lesson below.</small></div></form></section>') +
     '<form id="lesson-form"><section class="panel"><h2>The lesson</h2>' +
+    (college() ? collegeMetaEditor(l) : '') +
     field('title', 'Title', l.title) +
     field('objective', 'Learning objective', l.objective, true) +
     '<div class="split">' +
@@ -225,7 +232,8 @@ function studio() {
     field('theme', 'Theme', l.theme) +
     '</div>' +
     field('introduction', 'Opening explanation', l.introduction, true) +
-    '</section><section class="panel"><p class="eyebrow">Short explanatory video</p><h2>Three scenes. One clear idea.</h2><p class="muted">Edit the script and the number of equal parts shown. Chalkline makes a narrated animation with captions.</p>' +
+    (college() ? '</section><section class="panel"><h2>Readings & source material</h2><p class="muted">Add up to three readings. Paste the passage students should examine; links are references and are not fetched by AI.</p>' + collegeReadingEditor(l) : '') +
+    '</section><section class="panel"><p class="eyebrow">Short explanatory video</p><h2>Three scenes. One clear idea.</h2><p class="muted">' + wording('Edit the script and the number of equal parts shown. Chalkline makes a narrated animation with captions.', 'Edit the narration. Chalkline creates a three-scene video with academic explanation cards, captions, and a transcript.') + '</p>' +
     l.scenes
       .map(
         (s, i) =>
@@ -233,7 +241,7 @@ function studio() {
           (i + 1) +
           '</div><div class="split">' +
           field('heading' + i, 'Heading', s.heading) +
-          field('parts' + i, 'Equal parts', s.denominator, false, 'number') +
+          (college() ? '' : field('parts' + i, 'Equal parts', s.denominator, false, 'number')) +
           '</div>' +
           field('narration' + i, 'Narration', s.narration, true) +
           '</div>'
@@ -242,7 +250,7 @@ function studio() {
     '</section><section class="panel"><h2>Check understanding</h2>' +
     field('question', 'Question', l.question) +
     l.options.map((o, i) => field('option' + i, 'Choice ' + (i + 1), o)).join('') +
-    '<label>Answer key · teacher only<select name="correctIndex">' +
+    '<label>Answer key · ' + wording('teacher', 'instructor') + ' only<select name="correctIndex">' +
     l.options
       .map(
         (_, i) =>
@@ -250,7 +258,7 @@ function studio() {
       )
       .join('') +
     '</select></label>' +
-    field('teacherNotes', 'Your private teaching notes', l.teacherNotes, true) +
+    field('teacherNotes', wording('Your private teaching notes', 'Private instructor notes / assessment criteria'), l.teacherNotes, true) +
     '<button>Save lesson</button></section></form></div>' +
     '<aside><section class="panel"><p class="eyebrow">Student preview</p><h2>Try the exploration.</h2><p class="muted">Preview uses saved version ' +
     r +
@@ -276,7 +284,7 @@ function studio() {
       )
       .join('') +
     field('due', 'Due date', new Date(Date.now() + 86400000 * 3).toISOString().slice(0, 10), false, 'date') +
-    '<label>Help available<select name="mode"><option value="hints">Hints and explanations</option><option value="examples">Hints and similar worked examples</option><option value="teacher">Ask the teacher only</option></select></label><label class="check"><input name="reviewed" type="checkbox" required>I reviewed this saved lesson, its answer key, and any video included.</label><p><small>Preview the saved lesson first. Published versions stay unchanged when you edit your next draft.</small></p><button>Assign lesson</button></form></section></aside></div>'
+    '<label>Help available<select name="mode"><option value="hints">Hints and explanations</option><option value="examples">Hints and similar worked examples</option><option value="teacher">Instructor / teacher questions only</option></select></label><label class="check"><input name="reviewed" type="checkbox" required>I reviewed this saved lesson, its answer key, and any video included.</label><p><small>Preview the saved lesson first. Published versions stay unchanged when you edit your next draft.</small></p><button>Assign lesson</button></form></section></aside></div>'
   )
 }
 function insights() {
@@ -411,6 +419,7 @@ function engineLabel(engine) {
   )
 }
 function studentHome() {
+  if (college()) return collegeStudentHome()
   return (
     head(
       'Today & homework',
@@ -458,17 +467,18 @@ function studentLesson() {
   const conflict = !!draft && (draft.conflict || draft.revision !== (w?.revision || 0))
   return (
     '<div class="actions">' +
-    button('student-home', '← My lessons', '', 'true') +
+    button('student-home', wording('← My lessons', '← My coursework'), '', 'true') +
     '<span class="pill">Due ' +
     E(a.due) +
     '</span></div>' +
     head(E(a.lesson.audience), E(a.title), E(a.lesson.objective)) +
-    '<div class="grid"><div><section class="panel"><p class="eyebrow">01 · Watch & wonder</p><h2>A new way to see it.</h2>' +
+    (college() ? collegeModuleMeta(a.lesson) + collegeReadingPanel(a.lesson) : '') +
+    '<div class="grid"><div><section class="panel"><p class="eyebrow">' + wording('01 · Watch & wonder', '01 · Concept briefing') + '</p><h2>' + wording('A new way to see it.', 'Understand the argument.') + '</h2>' +
     (a.media ? '<div id="video-host"></div>' : '<p>' + E(a.lesson.introduction) + '</p>') +
     '<details><summary>Read the explanation</summary>' +
     a.lesson.scenes.map(s => '<h3 class="divider">' + E(s.heading) + '</h3><p>' + E(s.narration) + '</p>').join('') +
     '</details></section>' +
-    '<section class="panel"><p class="eyebrow">02 · Try it yourself</p><h2>Move the pieces. Notice what changes.</h2><div id="preview-host"></div></section>' +
+    '<section class="panel"><p class="eyebrow">02 · Explore</p><h2>' + wording('Move the pieces. Notice what changes.', 'Examine the evidence.') + '</h2><div id="preview-host"></div></section>' +
     '<section class="panel"><p class="eyebrow">03 · Show your thinking</p><h2>' +
     E(a.lesson.question) +
     '</h2><form id="work"><div id="work-notices">' + retryBanner('progress', a.id) + (conflict ? conflictNotice() : '') + '</div><fieldset ' +
@@ -486,16 +496,16 @@ function studentLesson() {
           '</label>'
       )
       .join('') +
-    '<label>How do you know?<textarea name="reasoning" maxlength="3000" placeholder="I noticed that…">' +
+    '<label>' + wording('How do you know?', 'Your analysis') + '<textarea name="reasoning" maxlength="3000" placeholder="' + wording('I noticed that…', 'Explain your reasoning, cite a supplied passage or data point, and address an alternative explanation.') + '">' +
     E(shown?.reasoning || '') +
     '</textarea></label></fieldset>' +
     (!submitted
-      ? '<div class="actions"><button name="intent" value="save" class="secondary">Save my progress</button><button name="intent" value="submit">Turn in my work</button></div>'
-      : '<p class="notice-inline">Your work is turned in. Your teacher can see your explanation.</p>') +
-    '<p id="work-status" role="status" class="save-status">' + (submitted ? 'Shared with your teacher.' : draft ? 'Restored from this browser · Save to share your progress with your teacher.' : w ? 'Saved with your teacher.' : 'Choose Save to keep your progress with your teacher.') + '</p></form>' +
-    (w?.feedback ? '<p class="notice-inline"><b>From your teacher:</b> ' + E(w.feedback) + '</p>' : '') +
+      ? '<div class="actions"><button name="intent" value="save" class="secondary">Save my progress</button><button name="intent" value="submit">' + wording('Turn in my work', 'Submit analysis') + '</button></div>'
+      : '<p class="notice-inline">' + wording('Your work is turned in. Your teacher can see your explanation.', 'Your analysis is submitted. Your instructor can review your response.') + '</p>') +
+    '<p id="work-status" role="status" class="save-status">' + (submitted ? wording('Shared with your teacher.', 'Shared with your instructor.') : draft ? wording('Restored from this browser · Save to share your progress with your teacher.', 'Restored from this browser · Save to share with your instructor.') : w ? wording('Saved with your teacher.', 'Saved with your instructor.') : wording('Choose Save to keep your progress with your teacher.', 'Choose Save to keep your progress with your instructor.')) + '</p></form>' +
+    (w?.feedback ? '<p class="notice-inline"><b>' + wording('From your teacher:', 'Instructor feedback:') + '</b> ' + E(w.feedback) + '</p>' : '') +
     '</section></div>' +
-    '<aside class="sticky"><section class="panel"><p class="eyebrow">A little help along the way</p><h2>Let’s think it through.</h2><p class="notice-inline">Your teacher can read the questions and replies here. You can ask for help as often as you need.</p><div class="chatlog" id="chatlog">' +
+    '<aside class="sticky"><section class="panel"><p class="eyebrow">' + wording('A little help along the way', 'Course study support') + '</p><h2>' + wording('Let’s think it through.', 'Work through the question.') + '</h2><p class="notice-inline">' + wording('Your teacher can read the questions and replies here. You can ask for help as often as you need.', 'Your instructor can read every question and reply in this course. AI supports your reasoning; you remain the author of your submission. Assistance: ' + (a.mode === 'teacher' ? 'instructor questions only' : a.mode === 'hints' ? 'hints and explanations' : 'hints and different worked examples') + '.') + '</p><div class="chatlog" id="chatlog">' +
     a.help
       .map(
         h =>
@@ -508,8 +518,8 @@ function studentLesson() {
           '</div>'
       )
       .join('') +
-    '</div><form id="help"><div id="help-notices">' + retryBanner('help', a.id) + '</div><label>What would you like help with?<textarea name="question" maxlength="1200" required placeholder="Why do more parts make smaller pieces?"></textarea></label><button>' +
-    (a.mode === 'teacher' ? 'Ask my teacher' : 'Help me understand') +
+    '</div><form id="help"><div id="help-notices">' + retryBanner('help', a.id) + '</div><label>What would you like help with?<textarea name="question" maxlength="1200" required placeholder="' + wording('Why do more parts make smaller pieces?', 'Which assumption should I examine? How can I evaluate this evidence?') + '"></textarea></label><button>' +
+    (a.mode === 'teacher' ? wording('Ask my teacher', 'Ask my instructor') : 'Help me understand') +
     '</button><p><small>Help may take a moment. A saved lesson hint is available if AI cannot connect.</small></p></form></section></aside></div>'
   )
 }
@@ -521,7 +531,7 @@ async function showPreview(assignment) {
   ).text()
   const frame = document.createElement('iframe')
   frame.className = 'preview'
-  frame.title = 'Interactive equal-parts lesson'
+  frame.title = wording('Interactive equal-parts lesson', 'Interactive college module')
   frame.setAttribute('sandbox', 'allow-scripts')
   frame.srcdoc = html
   host.replaceChildren(frame)
@@ -592,6 +602,7 @@ function pollMedia() {
 function collectLesson() {
   const f = new FormData(document.querySelector('#lesson-form'))
   return {
+    ...(college() ? { kind: (working || state.draft.lesson).kind, courseCode: f.get('courseCode'), module: f.get('module'), estimatedMinutes: Number(f.get('estimatedMinutes')), readings: [0,1,2].map(i => ({ title: f.get('readingTitle'+i), url: f.get('readingUrl'+i), excerpt: f.get('readingExcerpt'+i) })).filter(r => r.title || r.url || r.excerpt) } : {}),
     title: f.get('title'),
     objective: f.get('objective'),
     audience: f.get('audience'),
@@ -600,7 +611,7 @@ function collectLesson() {
     scenes: [0, 1, 2].map(i => ({
       heading: f.get('heading' + i),
       narration: f.get('narration' + i),
-      denominator: Number(f.get('parts' + i))
+      ...(college() ? {} : { denominator: Number(f.get('parts' + i)) })
     })),
     question: f.get('question'),
     options: [0, 1, 2].map(i => f.get('option' + i)),
@@ -777,9 +788,18 @@ root.addEventListener('submit', async e => {
       forgetSession(); login(); notice('Password changed. Sign in with your new password.'); return
     }
     if (form.id === 'class-create') {
-      const result = await api('classes', { name: data.get('name') })
+      const result = await api('classes', { name: data.get('name'), ...(college() ? { kind: data.get('kind') } : {}) })
       currentClassId = result.id || result.class?.id; selected = ''; working = null; dirty = false; previewed = 0; credentials = null
       await load(); await render(); notice('Class created. Add its first learner.'); return
+    }
+    if (form.id === 'student-enroll') {
+      await api('students/enroll', { classId: currentClassId, username: data.get('username') })
+      await load(); await render(); notice('Student enrolled with their existing sign-in.'); return
+    }
+    if (form.id === 'template-load') {
+      if (dirty && !confirm('Replace your unsaved module draft?')) return
+      const result = await api('template', { classId: currentClassId, kind: data.get('kind') })
+      working = result.lesson; dirty = true; previewed = 0; await render(); notice('Template loaded as an unsaved draft. Review and save it.'); return
     }
     if (form.id === 'student-add') {
       const result = await api('students', { classId: currentClassId, name: data.get('name'), username: data.get('username') })
@@ -790,6 +810,7 @@ root.addEventListener('submit', async e => {
       working = null; dirty = false; previewed = 0; await render(); notice('Lesson saved. Preview the new version before assigning.')
     }
     if (form.id === 'generate') {
+      if (college() && dirty) throw new Error('Save your module and readings before drafting with AI.')
       const result = await api('generate', { classId: currentClassId, brief: data.get('brief') })
       working = result.lesson; dirty = true; previewed = 0; await render(); notice('AI draft ready. Check the explanation and answer key, then save.')
     }
@@ -825,7 +846,57 @@ root.addEventListener('submit', async e => {
 window.addEventListener('offline', () => { captureWork(); notice('You are offline. Keep this tab open or return later; your typed work is kept in this browser.', true) })
 window.addEventListener('online', () => notice('Connection restored. Save your progress or retry any request that was interrupted.'))
 window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = '' } })
-if (token) {
-  if (!incomingSession) scheduleExpiry(sessionStorage.getItem('chalkline-expires'))
-  load().then(render).catch(error => { login(); notice(error.message, true) })
-} else login()
+async function start(){const info=await api("info");edition=info.edition||"school";document.body.dataset.edition=edition;document.title=college()?"Chalkline College · Course workspace":"Chalkline · Learn together";if(token){if(!incomingSession)scheduleExpiry(sessionStorage.getItem("chalkline-expires"));await load();await render()}else login()}
+start().catch(error=>{login();notice(error.message,true)})
+
+function collegeLogin() {
+  return '<main class="login college-login"><div class="brand"><span class="brandmark">c</span>chalkline <small class="college-wordmark">COLLEGE</small></div><p class="eyebrow">A workspace for deeper understanding</p><h1>Explore the concept.<br>Develop your argument.</h1><p>Course modules, evidence, and study support in one place.</p><form id="login"><label>Username<input name="username" required autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="64"></label><label>Password<input name="password" required autocomplete="current-password" type="password"></label><button>Sign in</button></form><p class="notice-inline">Use the account your instructor shared. This private demonstration uses fictional college courses and students.</p></main>'
+}
+function collegeTemplateOptions(kind) {
+  return (state.templates || []).map(t => '<option value="' + E(t.kind) + '" ' + (t.kind === kind ? 'selected' : '') + '>' + E(t.label) + '</option>').join('')
+}
+function collegeModuleMeta(l) {
+  return '<div class="module-meta"><span class="pill">' + E(l.courseCode) + '</span><span>' + E(l.module) + '</span><span>' + E(l.estimatedMinutes) + ' min suggested study time</span></div>'
+}
+function collegeOverview() {
+  const submitted = state.assignments.reduce((n,a) => n + a.work.filter(w => w.submitted).length,0)
+  const questions = state.assignments.reduce((n,a) => n + a.help.length,0)
+  return '<section class="hero college-hero"><div><p class="eyebrow">Chalkline College / Instructor workspace</p><h1>Make room for<br>deeper thinking.</h1><p>Turn course material into an explanation, an exploration, and a question worth investigating.</p>' + button('studio','Build a course module →') + '</div><div class="college-art" aria-hidden="true"><span>01 / EXPLORE</span><strong>Evidence<br>before<br>conclusions.</strong><span>02 / QUESTION &nbsp; 03 / REFLECT</span></div></section>' +
+    '<div class="stats"><div class="stat"><b>' + state.assignments.length + '</b><small>Published modules</small></div><div class="stat"><b>' + submitted + '</b><small>Submitted analyses</small></div><div class="stat"><b>' + questions + '</b><small>Course questions</small></div></div>' +
+    '<section class="panel"><div class="pagehead"><div><p class="eyebrow">Current course</p><h2>' + E(state.classes.find(c=>c.id===currentClassId)?.name) + '</h2></div>' + button('refresh','Refresh','',true) + '</div>' + assignmentRows() + '</section>' +
+    '<div class="split"><section class="panel"><p class="eyebrow">A starting point</p><h2>Two ways to investigate.</h2><p>Explore correlation and confounding with a fictional dataset, or build a close-reading seminar from a supplied passage.</p>' + button('studio','Open Module Studio','',true) + '</section><section class="panel"><p class="eyebrow">Connected coursework</p><h2>One account. Multiple courses.</h2><p>Enroll students, publish reviewed modules, and respond to the actual questions and analyses they share.</p>' + button('manage-class','Manage courses & enrollment','',true) + '</section></div>'
+}
+function collegeClassmates() {
+  return head('Courses & enrollment','Bring your course together.','Create courses and share individual accounts privately. A student can use the same sign-in across your courses.') + credentialCard() +
+    '<div class="grid"><section class="panel"><h2>Enrolled students</h2><p class="muted">Students can only access modules assigned to them in courses where they are enrolled.</p>' + studentLinks() + '</section><aside><section class="panel"><h2>Add a new student</h2><form id="student-add"><label>Student name<input name="name" maxlength="100" required></label><label>Student username<input name="username" maxlength="64" minlength="3" required autocapitalize="none" spellcheck="false"></label><button>Create student sign-in</button></form></section>' +
+    '<section class="panel"><h2>Enroll an existing student</h2><p class="muted">Use a username from another course you own. Their password stays the same.</p><form id="student-enroll"><label>Existing student username<input name="username" required maxlength="64" autocapitalize="none"></label><button>Enroll in this course</button></form></section>' +
+    '<section class="panel"><h2>Create another course</h2><form id="class-create"><label>Course name<input name="name" maxlength="100" required placeholder="ENG 101 · Academic Writing"></label><label>Starting module<select name="kind">' + collegeTemplateOptions('college-seminar') + '</select></label><button>Create course</button></form></section></aside></div>'
+}
+function collegeStudioStart(l) {
+  return '<section class="panel"><p class="eyebrow">Choose your teaching format</p><h2>Start with evidence.</h2><form id="template-load"><label>Module format<select name="kind">' + collegeTemplateOptions(l.kind) + '</select></label><button class="secondary">Load template as draft</button></form><p class="muted">The statistics lab uses fixed, explicitly fictional data. The reading seminar uses your supplied passages.</p><form id="generate" class="divider"><label>What should this explanation focus on?<textarea name="brief" maxlength="1800" placeholder="Explain an assumption, compare interpretations, or adapt the discussion for this course."></textarea></label><button>Draft with AI</button><p><small>AI uses your saved module and readings. Save edits first, then check the generated draft before publishing.</small></p></form></section>'
+}
+function collegeMetaEditor(l) {
+  return '<div class="split">' + field('courseCode','Course code',l.courseCode) + field('module','Module / week',l.module) + '</div>' + field('estimatedMinutes','Suggested study time (minutes)',l.estimatedMinutes,false,'number')
+}
+function collegeReadingEditor(l) {
+  return [0,1,2].map(i => {
+    const r = l.readings?.[i] || {}
+    return '<details ' + (r.title ? 'open' : '') + '><summary>Reading ' + (i+1) + (r.title ? ' · '+E(r.title) : ' · Optional') + '</summary><label>Reading '+(i+1)+' title<input name="readingTitle'+i+'" maxlength="160" value="'+E(r.title)+'"></label><label>Reading '+(i+1)+' HTTPS link (optional)<input type="url" name="readingUrl'+i+'" maxlength="2000" value="'+E(r.url)+'"></label><label>Reading '+(i+1)+' excerpt<textarea name="readingExcerpt'+i+'" maxlength="1800">'+E(r.excerpt)+'</textarea></label></details>'
+  }).join('')
+}
+function collegeReadingPanel(l) {
+  if (!l.readings?.length) return ''
+  return '<section class="panel readings-panel"><p class="eyebrow">Course readings</p><h2>Read before you respond.</h2><p class="muted">Instructor-supplied material. The AI sees the excerpts shown here; it does not retrieve linked pages.</p>' + l.readings.map((r,i)=>'<details><summary>'+(i+1)+'. '+E(r.title)+'</summary><p class="reading-excerpt">'+E(r.excerpt)+'</p>'+(r.url?'<a href="'+E(r.url)+'" target="_blank" rel="noopener noreferrer">Open reading source ↗</a>':'<small>Passage supplied within this module.</small>')+'</details>').join('')+'</section>'
+}
+function collegeStudentHome() {
+  const rows = [...state.assignments].sort((a,b)=>a.due.localeCompare(b.due))
+  const open = rows.filter(a=>!a.work[0]?.submitted)
+  const time = open.reduce((n,a)=>n+(a.lesson.estimatedMinutes||0),0)
+  return head('Your course workspace','Build your understanding.','Explore the material, test an explanation, and develop your own response.') +
+    '<div class="stats"><div class="stat"><b>'+open.length+'</b><small>Modules to complete</small></div><div class="stat"><b>'+time+'</b><small>Suggested study minutes</small></div><div class="stat"><b>'+rows.filter(a=>a.work[0]?.feedback).length+'</b><small>Instructor responses</small></div></div>' +
+    '<p class="notice-inline">Your instructor can see your submitted and saved work, plus every study-help question and reply in this course. Follow the assistance policy shown in each module.</p>' +
+    (rows.length ? rows.map(a=>{
+      const w=a.work[0], today=new Date().toLocaleDateString('en-CA')
+      return '<section class="panel course-card"><p class="eyebrow">Due '+E(a.due)+' · '+(w?.submitted?'Submitted':a.due<today?'Past due':a.due===today?'Due today':'Upcoming')+'</p>'+collegeModuleMeta(a.lesson)+'<h2>'+E(a.title)+'</h2><p>'+E(a.lesson.objective)+'</p><div class="actions">'+button('learn',w?.submitted?'Review your submission':'Open module →','data-id="'+E(a.id)+'"')+'<span class="pill">'+(w?.submitted?'Submitted':w?'Draft saved':'Ready to start')+'</span></div>'+(w?.feedback?'<p class="notice-inline"><b>Instructor feedback:</b> '+E(w.feedback)+'</p>':'')+'</section>'
+    }).join('') : '<section class="panel empty">No modules have been assigned in this course yet.</section>')+button('refresh','Refresh coursework','',true)
+}

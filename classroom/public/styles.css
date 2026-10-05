@@ -634,3 +634,22 @@ header, .identity, .actions { flex-wrap: wrap; }
   .identity { width: 100%; justify-content: flex-end; }
   .identity > span { margin-right: auto; }
 }
+
+
+body[data-edition="college"] { --paper:#f2f3f2; --panel:#fffefa; --ink:#1b2e3c; --muted:#64717a; --line:#d9dfe2; --accent:#294c62; --mint:#e0ebef; --gold:#debe7b; --coral:#a95636; --radius:12px; }
+.college-wordmark {font:600 11px/1.5 system-ui;letter-spacing:.14em;border-left:1px solid var(--line);padding-left:10px;margin-left:6px}
+.college-hero {background:#1d3443;color:#fffaf0;grid-template-columns:1.5fr 1fr}
+.college-hero .eyebrow,.college-hero p {color:#cbd8df}
+.college-hero button {background:#dfbe7c;color:#20313b}
+.college-art {border-left:1px solid #59717f;padding:12px 0 12px 28px;display:flex;flex-direction:column;gap:22px}
+.college-art strong {font:40px/1.15 Georgia,serif}
+.college-art span {font:11px/1.7 system-ui;letter-spacing:.12em;color:#cbd8df}
+.module-meta {display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:13px;color:var(--muted);margin:16px 0}
+.reading-excerpt {white-space:pre-wrap}
+body[data-edition="college"] .hero h1 {font-size:clamp(32px,3.8vw,58px)}
+body[data-edition="college"] .preview {height:720px}
+body[data-edition="college"] textarea[name="reasoning"] {min-height:190px}
+.college-login {max-width:630px}
+@media(max-width:660px) {.college-art{display:none}.college-wordmark{font-size:9px}.module-meta{gap:8px}body[data-edition="college"] .preview{height:790px}}
+
+body[data-edition="college"] { color:var(--ink); background:var(--paper); }

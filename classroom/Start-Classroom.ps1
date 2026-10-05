@@ -16,6 +16,7 @@ if (Test-Path -LiteralPath $ConfigPath) { $config = Get-Content -LiteralPath $Co
 if (-not $PSBoundParameters.ContainsKey('Port') -and $config.server.port) { $Port = [int]$config.server.port }
 $healthOrigin = "http://127.0.0.1:$Port"
 if ($config.server.tls) { $healthOrigin = $config.server.publicOrigin }
+$expectedEdition = if ($config.edition) { $config.edition } else { 'school' }
 $ready = $false
 try { $health = Invoke-RestMethod "$healthOrigin/health" -TimeoutSec 2; $ready = $health.service -eq 'chalkline-classroom' } catch {}
 if ($ready -and $health.version -ne 2) { throw 'An older classroom is running on this port. Back it up and stop it before upgrading.' }
@@ -30,6 +31,8 @@ if (-not $ready) {
   }
 }
 if (-not $ready) { throw "Classroom did not start. See $DataDirectory/service-errors.log" }
+$actualEdition = if ($health.edition) { $health.edition } else { 'school' }
+if ($actualEdition -ne $expectedEdition) { throw 'This port is serving another Chalkline edition. Choose a separate port and data directory.' }
 $launchPath = Join-Path $DataDirectory 'launch.json'
 if (-not (Test-Path -LiteralPath $launchPath)) { throw 'This port is serving another classroom. Use its data directory or another port.' }
 $launch = Get-Content -LiteralPath $launchPath -Raw | ConvertFrom-Json

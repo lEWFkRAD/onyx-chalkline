@@ -1,0 +1,11 @@
+{
+  "edition": "college",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5196
+  },
+  "media": {
+    "ffmpeg": "ffmpeg",
+    "powershell": "powershell.exe"
+  }
+}

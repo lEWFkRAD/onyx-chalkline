@@ -27,3 +27,4 @@ jobs:
       - run: npm test --workspaces=false
       - run: npx --workspaces=false playwright install --with-deps chromium
       - run: npm run test:browser --workspaces=false
+      - run: npm run test:college --workspaces=false

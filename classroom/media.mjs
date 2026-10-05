@@ -46,7 +46,23 @@ function timestamp(seconds) {
     String(ms % 1000).padStart(3, '0')
   )
 }
-export async function renderVideo(lesson, revision, dir, config) {
+
+export function collegeCardText(scene) {
+  const wrap=(value,width,limit)=>{
+    const remaining=Array.from(String(value).replace(/\s+/g,' ').trim()),lines=[]
+    while(remaining.length&&lines.length<limit){
+      const line=remaining.splice(0,width),space=line.lastIndexOf(' ')
+      if(remaining.length&&space>0)remaining.unshift(...line.splice(space))
+      lines.push(line.join('').trim());while(remaining[0]===' ')remaining.shift()
+    }
+    if(remaining.length)lines[lines.length-1]=Array.from(lines.at(-1)).slice(0,width-1).join('').trimEnd()+'…'
+    return lines.join('\n')
+  }
+  return {title:wrap(scene.heading,28,2),bullets:[...new Intl.Segmenter('en',{granularity:'sentence'}).segment(scene.narration)].map(p=>p.segment.trim()).filter(Boolean).slice(0,3).map(s=>wrap(s,36,3))}
+}
+
+export async function renderVideo(lesson, revision, dir, config = {}) {
+  const college = config.edition === 'college'
   if (process.platform !== 'win32') throw new Error('This prototype uses Windows narration.')
   const asset = 'lesson-' + revision
   const folder = join(dir, asset)
@@ -55,9 +71,13 @@ export async function renderVideo(lesson, revision, dir, config) {
   const captions = ['WEBVTT', '']
   for (let i = 0; i < lesson.scenes.length; i++) {
     const scene = lesson.scenes[i]
-    await writeFile(join(folder, 'speech.txt'), scene.narration)
-    await writeFile(join(folder, 'title.txt'), scene.heading.replace(/(.{1,40})(?:\s|$)/g, '$1\n').trim())
-    await writeFile(join(folder, 'label.txt'), 'One of ' + scene.denominator + ' equal parts')
+    const cards=college?collegeCardText(scene):null
+    await writeFile(join(folder,'speech.txt'),scene.narration)
+    await writeFile(join(folder,'title.txt'),cards?cards.title:scene.heading.replace(/(.{1,40})(?:\s|$)/g,'$1\n').trim())
+    if(cards){
+      for(let n=0;n<cards.bullets.length;n++)await writeFile(join(folder,'bullet-'+n+'.txt'),cards.bullets[n])
+      await writeFile(join(folder,'label.txt'),'CHALKLINE COLLEGE  /  SCENE '+(i+1)+' OF '+lesson.scenes.length)
+    }else await writeFile(join(folder,'label.txt'),'One of '+scene.denominator+' equal parts')
     await run(
       config.powershell || 'powershell.exe',
       [
@@ -73,6 +93,19 @@ export async function renderVideo(lesson, revision, dir, config) {
       folder
     )
     const seconds = duration(await readFile(join(folder, i + '.wav'))) + 1
+    let filter
+    if (cards) {
+      filter=[
+        "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':textfile=label.txt:expansion=none:fontcolor=0xaac6d5:fontsize=20:x=112:y=35",
+        "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':textfile=title.txt:expansion=none:fontcolor=0xf8f5eb:fontsize=38:line_spacing=8:x=112:y=80",
+        ...cards.bullets.flatMap((_,n)=>[
+          'drawbox=x=112:y='+(225+n*120)+':w=1056:h=108:color=0x243a48:t=fill',
+          'drawbox=x=130:y='+(244+n*120)+':w=6:h=6:color=0xaac6d5:t=fill',
+          "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':textfile=bullet-"+n+'.txt:expansion=none:fontcolor=0xf8f5eb:fontsize=28:line_spacing=5:x=154:y='+(235+n*120)
+        ]),
+        "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='SCENE EXCERPTS  /  FULL NARRATION IN CAPTIONS':expansion=none:fontcolor=0xaac6d5:fontsize=18:x=112:y=635"
+      ].join(',')
+    } else {
     const width = 1056 / scene.denominator
     const boxes = Array.from(
       { length: scene.denominator },
@@ -87,12 +120,13 @@ export async function renderVideo(lesson, revision, dir, config) {
         n * 0.14 +
         ')'
     )
-    const filter = [
+    filter = [
       "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':textfile=title.txt:expansion=none:fontcolor=0xf8f5eb:fontsize=42:line_spacing=12:x=112:y=100",
       ...boxes,
       "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':textfile=label.txt:expansion=none:fontcolor=0xf8f5eb:fontsize=32:x=112:y=495",
       "drawtext=fontfile='C\\:/Windows/Fonts/arial.ttf':text='CHALKLINE  /  LEARN TOGETHER':fontcolor=0xa7c8b7:fontsize=20:x=112:y=620"
     ].join(',')
+    }
     await writeFile(join(folder, 'filter.txt'), filter)
     await run(
       config.ffmpeg || 'ffmpeg',
@@ -101,7 +135,7 @@ export async function renderVideo(lesson, revision, dir, config) {
         '-f',
         'lavfi',
         '-i',
-        'color=c=0x173f38:s=1280x720:r=24',
+        (college ? 'color=c=0x182731' : 'color=c=0x173f38') + ':s=1280x720:r=24',
         '-i',
         i + '.wav',
         '-vf',

@@ -3,6 +3,7 @@ import { randomBytes, createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { seedLesson, publicLesson, validateLesson } from './lesson.mjs'
+import { seedCollegeLesson, seedSeminarLesson } from './college-lesson.mjs'
 import { newPassword, normalizeUsername, passwordRecord, checkPassword } from './identity.mjs'
 export const hash = value => createHash('sha256').update(value).digest('hex')
 const fail = (message, status = 400) => { throw Object.assign(new Error(message), { status }) }
@@ -12,8 +13,12 @@ const label = value => {
 }
 const safeUser = a => ({ id: a.id, name: a.name, role: a.role, username: a.username })
 const defaults = [{ id: 'maya', name: 'Maya B.' }, { id: 'eli', name: 'Eli R.' }, { id: 'luis', name: 'Luis S.' }, { id: 'ava', name: 'Ava H.' }]
+const collegeDefaults = [{ id:'alex', name:'Alex Morgan' },{ id:'jordan', name:'Jordan Lee' },{ id:'sam', name:'Sam Rivera' },{ id:'taylor', name:'Taylor Chen' }]
+const collegeKinds = new Set(['college-statistics','college-seminar'])
 export class ClassroomStore {
-  constructor(dir, { now = Date.now, sessionTtlMs = 8 * 60 * 60 * 1000 } = {}) {
+  constructor(dir, { now = Date.now, sessionTtlMs = 8 * 60 * 60 * 1000, edition = 'school' } = {}) {
+    if (!['school','college'].includes(edition)) throw new Error('Choose the school or college edition.')
+    this.edition = edition
     this.now = now
     if (!Number.isSafeInteger(sessionTtlMs) || sessionTtlMs < 1 || sessionTtlMs > 30 * 86400000) throw new Error('Invalid session lifetime.')
     this.sessionTtlMs = sessionTtlMs
@@ -22,6 +27,14 @@ export class ClassroomStore {
     try {
     const version = this.db.prepare('PRAGMA user_version').get().user_version
     if (version > 2) throw new Error('This classroom database needs a newer application.')
+    const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all()
+    const marker = tables.some(t => t.name === 'application_meta') ? this.db.prepare("SELECT value FROM application_meta WHERE key='edition'").get()?.value : undefined
+    if ((marker && marker !== edition) || (!marker && tables.length && edition !== 'school'))
+      throw new Error('This data directory belongs to another Chalkline edition. Use a separate data directory.')
+    if (!tables.length) this._transaction(() => {
+      this.db.exec('CREATE TABLE application_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+      this.db.prepare("INSERT INTO application_meta VALUES('edition',?)").run(this.edition)
+    })
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS draft(id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL, body TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS assignments(id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL, revision INTEGER NOT NULL, due TEXT NOT NULL, mode TEXT NOT NULL, created TEXT NOT NULL, media TEXT);
@@ -43,6 +56,7 @@ export class ClassroomStore {
   _migrate(dir) {
     this._transaction(() => {
       this.db.exec(`
+        CREATE TABLE IF NOT EXISTS application_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY, name TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('teacher','student')), username TEXT NOT NULL UNIQUE COLLATE NOCASE, salt TEXT NOT NULL, password_hash TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1, created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS classes(id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES accounts(id), name TEXT NOT NULL, created TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS class_memberships(class_id TEXT NOT NULL REFERENCES classes(id), student TEXT NOT NULL REFERENCES accounts(id), active INTEGER NOT NULL DEFAULT 1, PRIMARY KEY(class_id,student));
@@ -58,22 +72,23 @@ export class ClassroomStore {
         if (!this.db.prepare('PRAGMA table_info(' + table + ')').all().some(r => r.name === column)) this.db.exec('ALTER TABLE ' + table + ' ADD COLUMN ' + column + ' ' + definition)
       }
       if (!this.db.prepare('SELECT 1 FROM accounts LIMIT 1').get()) {
+        this.db.prepare("INSERT OR IGNORE INTO application_meta VALUES('edition',?)").run(this.edition)
         let legacy = null
         const accessPath = join(dir, 'access.json')
-        if (existsSync(accessPath)) legacy = JSON.parse(readFileSync(accessPath, 'utf8'))
-        const students = defaults.map(s => ({ ...s, name: legacy?.students?.find(old => old.id === s.id)?.name || s.name, username: s.id, password: newPassword() }))
-        const teacher = { id: 'teacher', name: 'Jamie', username: 'teacher', password: newPassword() }
+        if (this.edition === 'school' && existsSync(accessPath)) legacy = JSON.parse(readFileSync(accessPath, 'utf8'))
+        const students = (this.edition === 'college' ? collegeDefaults : defaults).map(s => ({ ...s, name: legacy?.students?.find(old => old.id === s.id)?.name || s.name, username: s.id, password: newPassword() }))
+        const teacher = { id:'teacher', name:this.edition === 'college' ? 'Dr. Jamie Reed' : 'Jamie', username:this.edition === 'college' ? 'instructor' : 'teacher', password:newPassword() }
         this._insertAccount({ ...teacher, role: 'teacher' })
         for (const s of students) this._insertAccount({ ...s, role: 'student' })
-        this.db.prepare('INSERT INTO classes VALUES(?,?,?,?)').run('demo-class', 'teacher', 'Grade 3 demo class', this._stamp())
+        this.db.prepare('INSERT INTO classes VALUES(?,?,?,?)').run('demo-class', 'teacher', this.edition === 'college' ? 'Research Methods · Demonstration' : 'Grade 3 demo class', this._stamp())
         for (const s of students) this.db.prepare('INSERT INTO class_memberships VALUES(?,?,1)').run('demo-class', s.id)
-        this.db.prepare('INSERT OR IGNORE INTO draft VALUES(1,1,?)').run(JSON.stringify(seedLesson))
+        this.db.prepare('INSERT OR IGNORE INTO draft VALUES(1,1,?)').run(JSON.stringify(this._seedForKind()))
         const draft = this.db.prepare('SELECT revision,body FROM draft WHERE id=1').get()
         this.db.prepare('INSERT INTO class_drafts VALUES(?,?,?)').run('demo-class', draft.revision, draft.body)
         this.db.prepare('INSERT OR IGNORE INTO lesson_versions VALUES(?,?,?,?)').run(draft.revision, 'demo-class', draft.body, this._stamp())
         for (const a of this.db.prepare('SELECT revision,body,created FROM assignments').all()) this.db.prepare('INSERT OR IGNORE INTO lesson_versions VALUES(?,?,?,?)').run(a.revision, 'demo-class', a.body, a.created)
         for (const m of this.db.prepare('SELECT revision FROM media').all()) this.db.prepare('INSERT OR IGNORE INTO lesson_versions VALUES(?,?,NULL,?)').run(m.revision, 'demo-class', this._stamp())
-        writeFileSync(join(dir, 'bootstrap.json'), JSON.stringify({ createdAt: this._stamp(), teacher, students }, null, 2), { mode: 0o600 })
+        writeFileSync(join(dir, 'bootstrap.json'), JSON.stringify({ edition:this.edition, createdAt: this._stamp(), teacher, students }, null, 2), { mode: 0o600 })
         this._audit('operator', 'migration-v2', 'demo-class', 'demo-class')
       }
       this.db.exec('PRAGMA user_version=2')
@@ -161,14 +176,32 @@ export class ClassroomStore {
     this.db.prepare('INSERT INTO class_drafts VALUES(?,?,?) ON CONFLICT(class_id) DO UPDATE SET revision=excluded.revision,body=excluded.body').run(classId, revision, body)
     return { revision, lesson }
   }
-  _newClass(p, name) {
+  _seedForKind(kind) {
+    if (this.edition === 'college') {
+      if (!kind || kind === 'college-statistics') return seedCollegeLesson
+      if (kind === 'college-seminar') return seedSeminarLesson
+      fail('Choose a college lesson template.')
+    }
+    if (kind && kind !== 'school-fractions') fail('Choose a school lesson template.')
+    return seedLesson
+  }
+  _assertLessonEdition(lesson) {
+    if (collegeKinds.has(lesson.kind) !== (this.edition === 'college')) fail('This lesson belongs to another Chalkline edition.')
+  }
+  templates() {
+    return this.edition === 'college'
+      ? [{kind:'college-statistics',label:'Correlation and causation'},{kind:'college-seminar',label:'Academic close reading'}]
+      : [{kind:'school-fractions',label:'Unit fractions'}]
+  }
+  template(p, {classId,kind}) { this.draft(p,classId); return {lesson:structuredClone(this._seedForKind(kind))} }
+  _newClass(p, name, kind) {
     const row = { id: randomUUID(), name: label(name), owner: p.id, created: this._stamp() }
     this.db.prepare('INSERT INTO classes VALUES(?,?,?,?)').run(row.id, row.owner, row.name, row.created)
-    this._newVersion(row.id, seedLesson)
+    this._newVersion(row.id, this._seedForKind(kind))
     this._audit(p.id, 'class-created', row.id, row.id)
     return row
   }
-  createClass(p, { name }) { this._actor(p, 'teacher'); return this._transaction(() => this._newClass(p, name)) }
+  createClass(p, { name, kind }) { this._actor(p, 'teacher'); return this._transaction(() => this._newClass(p, name, kind)) }
   addStudent(p, { classId, name, username }) {
     this._actor(p, 'teacher'); const classroom = this._class(p, classId), password = newPassword()
     return this._transaction(() => {
@@ -176,6 +209,18 @@ export class ClassroomStore {
       this.db.prepare('INSERT INTO class_memberships VALUES(?,?,1)').run(classroom.id, account.id)
       this._audit(p.id, 'student-created', account.id, classroom.id)
       return { student: { ...account, active: true }, credentials: { username: account.username, password } }
+    })
+  }
+  enrollExistingStudent(p, {classId,username}) {
+    this._actor(p,'teacher')
+    const classroom=this._class(p,classId),normalized=normalizeUsername(username)
+    return this._transaction(()=>{
+      const student=this.db.prepare("SELECT DISTINCT a.id,a.name,a.username,a.role FROM accounts a JOIN class_memberships m ON m.student=a.id JOIN classes c ON c.id=m.class_id WHERE a.username=? AND a.role='student' AND a.active=1 AND m.active=1 AND c.owner=? AND c.id<>?").get(normalized,p.id,classroom.id)
+      if(!student)fail('Use an active student account already enrolled in another course you own.',404)
+      const old=this.db.prepare('SELECT active FROM class_memberships WHERE class_id=? AND student=?').get(classroom.id,student.id)
+      this.db.prepare('INSERT INTO class_memberships(class_id,student,active) VALUES(?,?,1) ON CONFLICT(class_id,student) DO UPDATE SET active=1').run(classroom.id,student.id)
+      if(!old?.active)this._audit(p.id,'student-enrolled',student.id,classroom.id)
+      return {student:{...student,active:true}}
     })
   }
   _student(p, classId, studentId) {
@@ -228,6 +273,7 @@ export class ClassroomStore {
   }
   save(p, { classId, lesson, revision }) {
     this._actor(p, 'teacher'); const classroom = this._class(p, classId), clean = validateLesson(lesson)
+    this._assertLessonEdition(clean)
     return this._transaction(() => {
       const current = this.draft(p, classroom.id)
       if (current.revision !== revision) fail('This draft changed in another window. Reload before saving.', 409)
@@ -340,7 +386,7 @@ export class ClassroomStore {
     })
     const session = p.sessionId && this.db.prepare('SELECT expires FROM sessions WHERE digest=?').get(p.sessionId)
     return {
-      user: safeUser(account), classes, currentClassId: classroom.id, assignments,
+      edition:this.edition, templates:this.templates(), user: safeUser(account), classes, currentClassId: classroom.id, assignments,
       ...(session ? { expiresAt: new Date(session.expires).toISOString() } : {}),
       ...(p.role === 'teacher' ? {
         draft: this.draft(p, classroom.id),

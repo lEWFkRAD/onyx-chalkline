@@ -1,3 +1,4 @@
+import {validateCollegeLesson,collegeLessonHtml} from './college-lesson.mjs'
 export const seedLesson = {
   title: 'One whole. Many ways to share.',
   objective: 'Compare unit fractions using equal-sized wholes and explain why the size of each part changes.',
@@ -32,6 +33,8 @@ export const seedLesson = {
     'Ask students to explain what stayed the same. Look for reasoning about piece size rather than the larger numeral.'
 }
 export function validateLesson(value) {
+  if (value?.kind?.startsWith('college-')) return validateCollegeLesson(value)
+  if (value?.kind && value.kind !== 'school-fractions') throw new Error('Unsupported lesson format.')
   const string = (v, max, name) => {
     if (typeof v !== 'string' || !v.trim() || v.length > max) throw new Error('Check ' + name + '.')
     return v.trim()
@@ -81,6 +84,7 @@ export function escapeHtml(text) {
   )
 }
 export function lessonHtml(lesson) {
+  if (lesson.kind?.startsWith('college-')) return collegeLessonHtml(publicLesson(lesson))
   const safe = publicLesson(lesson)
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src data:; form-action 'none'; base-uri 'none'">

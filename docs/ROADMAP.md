@@ -13,3 +13,10 @@ The working target is one complete cycle: a teacher approves a lesson, a learner
 Version 0.2 is the first foundation and private-device slice, not completion of every stage. The classroom service has no production npm dependencies. The older root evidence application's production-only npm audit reported zero findings during this build; its broader development-tool dependency backlog requires separate review. No district connector is live.
 
 The next build should focus on a small reviewed library of lesson formats and a teacher walkthrough of the connected workflow. Avoid expanding integrations before that walkthrough identifies a concrete need.
+
+
+## College edition: first implementation, 2026-10-04
+
+Version 0.3 adds a separately configured browser edition for fictional college courses. Delivered: course identities and same-instructor multi-course enrollment, statistics and academic-reading formats, instructor-provided excerpts, academic help, editable narration cards, written analysis and feedback. It shares the service core without replacing the school installation.
+
+Next college stages: broader instructor-authored activities; reviewed syllabus/reading ingestion with source provenance; a study plan across enrolled courses; longer-form assessments and instructor rubrics; portable video rendering; and an institution-approved pilot covering identity, academic policy, data lifecycle and accessibility. LMS/SSO and real student records remain outside this demo. See [current scope](../classroom/COLLEGE.md).

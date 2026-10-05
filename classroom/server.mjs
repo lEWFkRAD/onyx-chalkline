@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { isIP } from 'node:net'
 import { randomUUID } from 'node:crypto'
 import { ClassroomStore } from './store.mjs'
-import { Tutor } from './tutor.mjs'
+import { Tutor, followupLesson } from './tutor.mjs'
 import { lessonHtml } from './lesson.mjs'
 import { renderVideo } from './media.mjs'
 import { acquireRuntimeLock } from './runtime-lock.mjs'
@@ -35,11 +35,11 @@ function requestId(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{16,80}$/.test(value)) throw statusError('A valid request identifier is required.')
   return value
 }
-export function createClassroom({ dataDir = join(root, 'data'), config = {}, tutor = new Tutor(config.ai), render = renderVideo } = {}) {
+export function createClassroom({ dataDir = join(root, 'data'), config = {}, tutor = new Tutor(config.ai, { edition:config.edition || 'school' }), render = renderVideo } = {}) {
   const transport = transportSettings(config.server)
   const tlsOptions = transport.tls ? { cert: readFileSync(transport.tls.certFile), key: readFileSync(transport.tls.keyFile), minVersion: 'TLSv1.2' } : null
   const instanceId = randomUUID()
-  const store = new ClassroomStore(dataDir)
+  const store = new ClassroomStore(dataDir, {edition:config.edition || 'school'})
   const mediaDir = join(dataDir, 'media')
   mkdirSync(mediaDir, { recursive: true })
   store.db.prepare("UPDATE media SET status='error',detail='Rendering was interrupted. Try again.' WHERE status='rendering'").run()
@@ -98,10 +98,10 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
       if (req.headers['sec-fetch-site'] === 'cross-site' && req.url.startsWith('/api/')) throw statusError('Cross-site requests are not allowed.', 403)
       const url = new URL(req.url, origin), path = url.pathname
       if (req.method === 'GET' && path === '/health') {
-        json(res, { service: 'chalkline-classroom', version: 2, instanceId, mode: transport.publicOrigin ? 'synthetic-shared' : 'synthetic-local' }); return
+        json(res, { service: 'chalkline-classroom', version: 2, edition:store.edition, instanceId, mode: transport.publicOrigin ? 'synthetic-shared' : 'synthetic-local' }); return
       }
       if (req.method === 'GET' && path === '/api/info') {
-        json(res, { version: 2, mode: 'synthetic', origin, signIn: 'password', remote: Boolean(transport.publicOrigin) }); return
+        json(res, { version: 2, edition:store.edition, templates:store.templates(), mode: 'synthetic', origin, signIn: 'password', remote: Boolean(transport.publicOrigin) }); return
       }
       if (!path.startsWith('/api/')) {
         const routes = { '/': 'index.html', '/app.js': 'app.js', '/styles.css': 'styles.css' }
@@ -140,6 +140,8 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
         '/api/password': () => store.changePassword(p, data),
         '/api/classes': () => { teacher(p); return store.createClass(p, data) },
         '/api/students': () => { teacher(p); return store.addStudent(p, data) },
+        '/api/students/enroll': () => { teacher(p); return store.enrollExistingStudent(p,data) },
+        '/api/template': () => { teacher(p); return store.template(p,data) },
         '/api/students/reset': () => { teacher(p); return store.resetStudent(p, data) },
         '/api/students/remove': () => { teacher(p); return store.removeStudent(p, data) },
         '/api/lesson': () => { teacher(p); return store.save(p, data) },
@@ -147,10 +149,10 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
         '/api/progress': () => { student(p); requestId(data.requestId); return store.saveWork(p, data) },
         '/api/feedback': () => { teacher(p); return store.feedback(p, data) },
         '/api/generate': async () => {
-          teacher(p); store.draft(p, data.classId)
+          teacher(p); const draft = store.draft(p, data.classId)
           if (typeof data.brief !== 'string' || !data.brief.trim() || data.brief.length > 1800) throw statusError('Describe the lesson in up to 1,800 characters.')
           let lesson
-          try { lesson = await tutor.generate(data.brief) } catch { throw statusError('AI drafting is unavailable. You can edit the ready-made lesson and all narration below.', 503) }
+          try { lesson = await tutor.generate(data.brief,draft.lesson) } catch { throw statusError('AI drafting is unavailable. You can edit the ready-made lesson and all narration below.', 503) }
           liveSession(); return { lesson }
         },
         '/api/help': async () => {
@@ -187,7 +189,7 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
           if (existing?.status === 'ready') return existing
           if (jobs.size) throw statusError('A video is already rendering. Please wait.', 409)
           store.saveMedia(p, { classId: data.classId, revision: draft.revision, status: 'rendering', detail: 'Creating narration and animation…' })
-          const job = Promise.resolve().then(() => render(draft.lesson, draft.revision, mediaDir, config.media || {}))
+          const job = Promise.resolve().then(() => render(draft.lesson, draft.revision, mediaDir, {...(config.media || {}),edition:store.edition}))
             .then(asset => store.saveMedia(p, { classId: data.classId, revision: draft.revision, status: 'ready', detail: 'Narrated video, captions and transcript ready.', asset }))
             .catch(error => {
               console.error('Video rendering failed:', error.message)
@@ -200,7 +202,7 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
           teacher(p)
           const a = store.assignment(data.assignmentId, p), questions = store.listHelp(p, a.id, 6)
           if (!questions.length) throw statusError('There are no student questions for this assignment yet.')
-          return { lesson: { ...a.lesson, title: 'Another look: ' + a.lesson.title.slice(0, 90), introduction: 'Try this together: compare two equal-sized wholes. Split one into two equal parts and one into eight. Describe what changes before returning to fourths and sixths.', teacherNotes: 'Follow-up draft based on actual student questions. Review these questions and adapt the activity:\n' + questions.map(q => q.question).join('\n').slice(0, 1300) } }
+          return { lesson: followupLesson(a,questions) }
         }
       }
       if (!actions[path]) throw statusError('Not found.', 404)
@@ -243,7 +245,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     app = createClassroom({ dataDir, config })
     const origin = await app.listen(Number(value('--port', config.server?.port || '5195')))
-    writeFileSync(join(dataDir, 'launch.json'), JSON.stringify({ origin, teacherUrl: origin, bootstrapFile: join(dataDir, 'bootstrap.json'), pid: process.pid, version: 2, instanceId: app.instanceId }, null, 2), { mode: 0o600 })
+    writeFileSync(join(dataDir, 'launch.json'), JSON.stringify({ origin, teacherUrl: origin, bootstrapFile: join(dataDir, 'bootstrap.json'), pid: process.pid, version: 2, edition:app.store.edition, instanceId: app.instanceId }, null, 2), { mode: 0o600 })
     console.log('Chalkline classroom ready at ' + origin + ' (synthetic classroom; initial credentials are in the private bootstrap file).')
     let stopping = false
     const stop = async () => { if (stopping) return; stopping = true; await app.close(); release(); process.exit(0) }
