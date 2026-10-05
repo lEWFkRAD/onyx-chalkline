@@ -1,4 +1,4 @@
-import {chromium,expect} from '@playwright/test'
+import {chromium,expect as baseExpect} from '@playwright/test'
 import assert from 'node:assert/strict'
 import {mkdtemp,mkdir,rm} from 'node:fs/promises'
 import {tmpdir} from 'node:os'
@@ -6,6 +6,7 @@ import {join,resolve,sep} from 'node:path'
 import {fileURLToPath} from 'node:url'
 import {createClassroom} from '../server.mjs'
 import {pdfFixture,docxFixture,fakePlanningTutor} from './source-fixtures.mjs'
+const expect=baseExpect.configure({timeout:25000})
 const browser=await chromium.launch({headless:true}),errors=[]
 await mkdir(new URL('../artifacts/',import.meta.url),{recursive:true})
 try{
@@ -17,10 +18,13 @@ try{
       await page.goto(origin);await page.getByLabel('Username',{exact:true}).fill(app.store.bootstrap.teacher.username);await page.getByLabel('Password',{exact:true}).fill(app.store.bootstrap.teacher.password);await page.getByRole('button',{name:'Sign in',exact:true}).click()
       await page.getByRole('button',{name:'Source Planner',exact:true}).click()
       const upload=page.locator('#planner-upload')
+      await expect(upload.getByLabel('Source file')).toBeEnabled()
       await upload.getByLabel('Source file').setInputFiles({name:'fictional-guide.pdf',mimeType:'application/pdf',buffer:pdfFixture()})
       await upload.getByLabel('Source title',{exact:true}).fill('Original test guide')
       await upload.getByLabel('Publisher / author').fill('Chalkline synthetic fixture')
+      const uploaded=page.waitForResponse(r=>r.url().includes('/api/source-upload?'))
       await upload.getByRole('button',{name:'Upload and extract text'}).click()
+      const uploadedResponse=await uploaded;assert.equal(uploadedResponse.status(),200,await uploadedResponse.text())
       await expect(page.getByLabel('Original test guide',{exact:true})).toBeVisible()
       await page.getByLabel('Original test guide',{exact:true}).check()
       await expect(page.locator('.planner-pages')).toBeVisible()
@@ -41,7 +45,9 @@ try{
       // Word parsing is exercised through the real upload path as well.
       await upload.getByLabel('Source file').setInputFiles({name:'fictional-guide.docx',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document',buffer:docxFixture()})
       await upload.getByLabel('Source title',{exact:true}).fill('Word source')
+      const wordUploaded=page.waitForResponse(r=>r.url().includes('/api/source-upload?'))
       await upload.getByRole('button',{name:'Upload and extract text'}).click()
+      const wordResponse=await wordUploaded;assert.equal(wordResponse.status(),200,await wordResponse.text())
       await expect(page.getByLabel('Word source',{exact:true})).toBeVisible()
       await page.getByRole('button',{name:'Delete source',exact:true}).first().click()
       await expect(page.getByLabel('Word source',{exact:true})).toHaveCount(0)
