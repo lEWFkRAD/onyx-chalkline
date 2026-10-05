@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
+import { createTestHarness } from "wrangler";
 
 async function readDirectoryIfPresent(url) {
   try {
@@ -11,20 +12,18 @@ async function readDirectoryIfPresent(url) {
   }
 }
 
-async function render() {
-  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
-  workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
-  const { default: worker } = await import(workerUrl.href);
-
-  return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html" } }),
-    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
-    { waitUntil() {}, passThroughOnException() {} },
-  );
+async function render(context) {
+  // Run the generated Worker in workerd, where cloudflare: imports and bindings
+  // have their real semantics instead of importing the Worker into Node.
+  const server = createTestHarness({
+    workers: [{ configPath: new URL("../dist/server/wrangler.json", import.meta.url) }],
+  });
+  context.after(() => server.close());
+  await server.listen();
+  return server.fetch("http://localhost/", { headers: { accept: "text/html" } });
 }
-
-test("server-renders the Chalkline teaching brief", async () => {
-  const response = await render();
+test("server-renders the Chalkline teaching brief", async (context) => {
+  const response = await render(context);
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
