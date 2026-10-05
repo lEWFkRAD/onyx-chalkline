@@ -1,6 +1,6 @@
 {
   "name": "chalkline-classroom",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
   "engines": {
@@ -15,10 +15,16 @@
     "restore": "node maintenance.mjs restore",
     "validate:backup": "node maintenance.mjs validate",
     "test:college": "node test/college-browser-check.mjs",
-    "test:college-media": "node test/college-media-check.mjs"
+    "test:college-media": "node test/college-media-check.mjs",
+    "test:planner": "node test/planner-browser-check.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1"
   },
-  "chalklineApiVersion": 2
+  "chalklineApiVersion": 2,
+  "dependencies": {
+    "mammoth": "1.13.0",
+    "pdfjs-dist": "6.4.299",
+    "yauzl": "3.4.0"
+  }
 }

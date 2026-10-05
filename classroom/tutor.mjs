@@ -18,7 +18,7 @@ export class Tutor {
     this.config = config
     this.busy = false
   }
-  async complete(messages, maxTokens = 500) {
+  async complete(messages, maxTokens = 500, {timeoutMs=45000} = {}) {
     if (!this.config.baseUrl || !this.config.model) throw new Error('AI is not configured.')
     if (this.busy) throw new Error('AI is helping another learner. Try again shortly.')
     this.busy = true
@@ -36,7 +36,7 @@ export class Tutor {
           temperature: 0.25,
           chat_template_kwargs: { enable_thinking: false }
         }),
-        signal: AbortSignal.timeout(45000)
+        signal: AbortSignal.timeout(Math.min(120000,Math.max(1000,timeoutMs)))
       })
       if (!response.ok) throw new Error('AI service is temporarily unavailable.')
       const data = await response.json()

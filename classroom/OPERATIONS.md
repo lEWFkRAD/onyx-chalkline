@@ -1,6 +1,6 @@
 # Classroom operations
 
-Use Node.js 24.11 or newer. The service has no production npm dependencies. Keep the entire data directory and every backup private: they contain work, authentication records, initial credentials and provider configuration. Maintenance prints counts and status, never tokens or file contents.
+Use Node.js 24.11 or newer. The service uses pinned PDF/Word extraction dependencies. In each new classroom release directory, run npm ci --omit=dev --ignore-scripts --workspaces=false before startup; never reinstall underneath a running service. Keep the entire data directory and every backup private: they contain work, authentication records, initial credentials and provider configuration. Maintenance prints counts and status, never tokens or file contents.
 
 ## Upgrade and recover
 
@@ -17,7 +17,7 @@ node maintenance.mjs validate --backup /private/classroom-backup-20261004
 node maintenance.mjs restore --backup /private/classroom-backup-20261004 --data /private/classroom-restored
 ```
 
-Run from the classroom source directory. On Windows, quote paths containing spaces. SQLite snapshots include committed WAL data. A SHA-256 manifest covers the database, access.json (legacy), bootstrap.json, identity.json if present, config.json if present, and files below media/. Logs, launch records, locks and WAL/shm files are excluded. Symbolic links are rejected. A failed partial backup has no valid manifest and must not be used.
+Run from the classroom source directory. On Windows, quote paths containing spaces. SQLite snapshots include committed WAL data, private extracted sources and teaching plans. Uploaded originals are not retained. A SHA-256 manifest covers the database, access.json (legacy), bootstrap.json, identity.json if present, config.json if present, and files below media/. Logs, launch records, locks and WAL/shm files are excluded. Symbolic links are rejected. A failed partial backup has no valid manifest and must not be used.
 
 Restore verifies hashes before copying, checks copied files and SQLite integrity, and revokes restored sessions. Restoring a v1 database is supported; migration happens when the chosen app version opens it. TLS keys and provider environment secrets outside the directory are not copied. Preserve these separately and check paths when moving machines.
 

@@ -1,10 +1,12 @@
+import { uploadMetadata, readUpload, extractSource } from './sources.mjs'
+import { draftTeachingPlan, planningInput } from './planner.mjs'
 import http from 'node:http'
 import https from 'node:https'
 import { createReadStream, readFileSync, existsSync, mkdirSync, writeFileSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { isIP } from 'node:net'
-import { randomUUID } from 'node:crypto'
+import { randomUUID, createHash } from 'node:crypto'
 import { ClassroomStore } from './store.mjs'
 import { Tutor, followupLesson } from './tutor.mjs'
 import { lessonHtml } from './lesson.mjs'
@@ -35,7 +37,7 @@ function requestId(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{16,80}$/.test(value)) throw statusError('A valid request identifier is required.')
   return value
 }
-export function createClassroom({ dataDir = join(root, 'data'), config = {}, tutor = new Tutor(config.ai, { edition:config.edition || 'school' }), render = renderVideo } = {}) {
+export function createClassroom({ dataDir = join(root, 'data'), config = {}, tutor = new Tutor(config.ai, { edition:config.edition || 'school' }), render = renderVideo, extract = extractSource } = {}) {
   const transport = transportSettings(config.server)
   const tlsOptions = transport.tls ? { cert: readFileSync(transport.tls.certFile), key: readFileSync(transport.tls.keyFile), minVersion: 'TLSv1.2' } : null
   const instanceId = randomUUID()
@@ -43,19 +45,21 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
   const mediaDir = join(dataDir, 'media')
   mkdirSync(mediaDir, { recursive: true })
   store.db.prepare("UPDATE media SET status='error',detail='Rendering was interrupted. Try again.' WHERE status='rendering'").run()
+  let extracting = false
+  const extractions = new Map()
   const jobs = new Map(), cooldowns = new Map(), pendingHelp = new Map(), loginAttempts = new Map()
   let loginActive = 0, origin = '', localOrigin = '', closing = false
   function json(res, value, status = 200) {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
     res.end(JSON.stringify(value))
   }
-  async function body(req) {
+  async function body(req,limit=32768) {
     if (!String(req.headers['content-type']).startsWith('application/json')) throw statusError('JSON is required.', 415)
     let bytes = 0
     const parts = []
     for await (const chunk of req) {
       bytes += chunk.length
-      if (bytes > 32768) throw statusError('Request too large.', 413)
+      if (bytes > limit) throw statusError('Request too large.', 413)
       parts.push(chunk)
     }
     let value
@@ -104,7 +108,7 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
         json(res, { version: 2, edition:store.edition, templates:store.templates(), mode: 'synthetic', origin, signIn: 'password', remote: Boolean(transport.publicOrigin) }); return
       }
       if (!path.startsWith('/api/')) {
-        const routes = { '/': 'index.html', '/app.js': 'app.js', '/styles.css': 'styles.css' }
+        const routes = { '/': 'index.html', '/app.js': 'app.js', '/styles.css': 'styles.css', '/planner.js': 'planner.js' }
         if (req.method !== 'GET' || !routes[path]) throw statusError('Not found.', 404)
         const file = routes[path], ext = file.slice(file.lastIndexOf('.'))
         res.writeHead(200, { 'Content-Type': types[ext] + '; charset=utf-8' }); res.end(readFileSync(join(root, 'public', file))); return
@@ -114,6 +118,19 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
       const p = store.principal(bearer)
       if (!p) throw statusError('Sign in to your classroom. Your session may have expired.', 401)
       const liveSession = () => { if (!store.principal(bearer)) throw statusError('Your session ended. Sign in again.', 401) }
+      if(req.method==='GET'&&path==='/api/sources'){teacher(p);const classId=url.searchParams.get('classId');json(res,{sources:store.listSources(p,classId),plan:store.teachingPlan(p,classId)});return}
+      if(req.method==='GET'&&path==='/api/source'){teacher(p);json(res,{source:store.getSources(p,{classId:url.searchParams.get('classId'),sourceIds:[url.searchParams.get('id')]})[0]});return}
+      if(req.method==='POST'&&path==='/api/source-upload'){
+        teacher(p);const classId=url.searchParams.get('classId');store.draft(p,classId)
+        const metadata=uploadMetadata(url.searchParams)
+        if(extracting)throw statusError('Another document is being extracted. Try again shortly.',429)
+        extracting=true;const controller=new AbortController(),cancel=()=>{if(!res.writableEnded)controller.abort()}
+        res.on('close',cancel)
+        const task=(async()=>{const buffer=await readUpload(req);liveSession();const existing=store.listSources(p,classId),hash=createHash('sha256').update(buffer).digest('hex'),duplicate=existing.find(s=>s.hash===hash);if(duplicate)return {source:duplicate,duplicate:true};if(existing.length>=24)throw statusError('This class already has 24 sources. Remove an unused source first.',409);const source=await extract(buffer,metadata,{signal:controller.signal});liveSession();return store.addSource(p,{classId,source})})()
+        extractions.set(controller,task)
+        try{json(res,await task)}finally{extracting=false;extractions.delete(controller);res.off('close',cancel)}
+        return
+      }
       if (req.method === 'GET' && path === '/api/state') { json(res, { ...store.state(p, url.searchParams.get('classId') || undefined), classroomUrl: origin }); return }
       if (req.method === 'GET' && path === '/api/lesson-html') {
         let lesson
@@ -133,9 +150,16 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
         stream.on('error', () => res.destroy()); res.on('close', () => stream.destroy()); stream.pipe(res); return
       }
       if (req.method !== 'POST') throw statusError('Not found.', 404)
-      const data = await body(req)
+      const data = await body(req,path==='/api/plan'?100000:32768)
       liveSession()
       const actions = {
+        '/api/source-delete':()=>{teacher(p);return store.deleteSource(p,data)},
+        '/api/plan':()=>{teacher(p);return store.saveTeachingPlan(p,data)},
+        '/api/plan-generate':async()=>{
+          teacher(p);planningInput(data);const sources=store.getSources(p,{classId:data.classId,sourceIds:data.sourceIds})
+          let plan;try{plan=await draftTeachingPlan(tutor,data,sources)}catch{throw statusError('AI could not produce a complete, valid plan. Your sources are saved. Try again with a shorter brief.',503)}
+          liveSession();store.getSources(p,{classId:data.classId,sourceIds:data.sourceIds});return {plan}
+        },
         '/api/logout': () => { store.logout(bearer); return { signedOut: true } },
         '/api/password': () => store.changePassword(p, data),
         '/api/classes': () => { teacher(p); return store.createClass(p, data) },
@@ -227,9 +251,10 @@ export function createClassroom({ dataDir = join(root, 'data'), config = {}, tut
     },
     close: async () => {
       closing = true
+      for(const controller of extractions.keys())controller.abort()
       server.closeAllConnections()
       await new Promise(ok => server.close(ok))
-      await Promise.allSettled([...jobs.values(), ...[...pendingHelp.values()].map(v => v.promise)])
+      await Promise.allSettled([...extractions.values(), ...jobs.values(), ...[...pendingHelp.values()].map(v => v.promise)])
       store.close()
     }
   }

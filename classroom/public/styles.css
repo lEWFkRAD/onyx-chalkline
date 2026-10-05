@@ -653,3 +653,5 @@ body[data-edition="college"] textarea[name="reasoning"] {min-height:190px}
 @media(max-width:660px) {.college-art{display:none}.college-wordmark{font-size:9px}.module-meta{gap:8px}body[data-edition="college"] .preview{height:790px}}
 
 body[data-edition="college"] { color:var(--ink); background:var(--paper); }
+
+.planner-frame{border:0;margin:0;padding:0;min-width:0}.planner-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:24px;align-items:start}.planner-source,.planner-step{padding:18px 0;border-bottom:1px solid var(--line)}.planner-pages pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;padding:16px;background:#f4f5f0;font:14px/1.65 system-ui}.planner-step select[multiple]{min-height:100px;width:100%;max-width:100%}.planner-source details{margin:8px 0}.planner-source summary{cursor:pointer;font-weight:600}.planner-frame input[type=file]{max-width:100%}.planner-frame .actions{flex-wrap:wrap}@media(max-width:850px){.planner-grid{grid-template-columns:minmax(0,1fr)}}

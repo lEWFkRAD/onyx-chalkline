@@ -12,7 +12,10 @@ permissions:
 
 jobs:
   classroom:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     defaults:
       run:
         working-directory: classroom
@@ -28,3 +31,8 @@ jobs:
       - run: npx --workspaces=false playwright install --with-deps chromium
       - run: npm run test:browser --workspaces=false
       - run: npm run test:college --workspaces=false
+      - run: npm run test:planner --workspaces=false
+      - name: Install only production dependencies
+        run: npm ci --omit=dev --ignore-scripts --workspaces=false
+      - name: Verify production document extraction and recovery
+        run: node --test --test-concurrency=1 test/sources.test.mjs

@@ -1,4 +1,4 @@
-# Chalkline connected classroom 0.2
+# Chalkline connected classroom 0.4
 
 **College edition:** see [Chalkline College](COLLEGE.md) for separate course data, statistics and academic-reading modules, and its own launcher. The school workflow below remains supported.
 
@@ -8,16 +8,21 @@ The first shared release remains a **synthetic-data prototype for one school ins
 
 ## Start on this computer
 
-Requires Node.js 24.11 or newer. No third-party runtime packages are needed:
+Requires Node.js 24.11 or newer. Install the pinned PDF/Word text parsers:
 
 ```sh
 cd classroom
+npm ci --omit=dev --ignore-scripts --workspaces=false
 node server.mjs
 ```
 
 Open `http://127.0.0.1:5195`. Initial randomly generated teacher and demo-student credentials are stored in the private `data/bootstrap.json` file. Keep that file and the entire data directory out of Git, public issues and shared screenshots. Sign in with the teacher username and password, then create a class or use the four initial fictional learners. A school operator controls this installation; there is no public self-registration or way to request a teacher role from the browser.
 
 On Windows, `./Start-Classroom.ps1` starts a hidden service and opens the sign-in page. `-TeacherSession` opens a short-lived teacher session using the locally stored initial credentials; once the password changes, sign in normally. The launcher also accepts `-DataDirectory`, `-ConfigPath`, `-Port` and `-NoBrowser`, and checks that an existing process belongs to the selected data directory.
+
+## Source Planner
+
+Both editions include [Source Planner](SOURCE-PLANNER.md): upload PDF, DOCX, TXT or Markdown teaching material, review the extracted text, and draft an editable private plan around selected sources. Adapt pacing, activities, differentiation, assessment and homework. Source documents and plans stay teacher-private; reviewed student materials are prepared separately in Lesson/Module Studio.
 
 ## First shared classroom cycle
 
@@ -53,7 +58,7 @@ Alternatively, direct HTTPS is supported with `server.host` set to the selected 
 
 ## AI and video
 
-Copy `config.example.json` to the private data directory, supply your approved AI endpoint/model if desired, and restart. Use the `CHALKLINE_AI_KEY` environment variable only if that endpoint requires a secret. With no provider, authoring, assignments and saved lesson hints remain usable; AI drafting reports that it is unavailable. Model calls have no Hermes tools and use only the assigned public lesson and that student's recent exchanges. Calls within the service are serialized; unavailable or busy AI produces an explicitly labeled saved hint.
+Copy `config.example.json` to the private data directory, supply your approved AI endpoint/model if desired, and restart. Use the `CHALKLINE_AI_KEY` environment variable only if that endpoint requires a secret. With no provider, authoring, assignments and saved lesson hints remain usable; AI drafting reports that it is unavailable. Model calls have no Hermes tools. Student help uses only the assigned public lesson and that student's recent exchanges; teacher planning uses the explicitly selected private source extracts. Calls within the service are serialized; unavailable or busy AI produces an explicitly labeled saved hint.
 
 Windows narration requires System.Speech and FFmpeg with libx264, AAC, drawtext and drawbox support. Configure executable paths through the private `media` settings when they are not on PATH. A render produces an MP4, WebVTT captions and a transcript. Only media attached to an assigned reviewed version is available to its learners. Linux/macOS can host the remaining classroom workflows.
 

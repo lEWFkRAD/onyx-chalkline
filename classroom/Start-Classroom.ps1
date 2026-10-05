@@ -7,6 +7,9 @@ param(
   [switch]$TeacherSession
 )
 $ErrorActionPreference = 'Stop'
+foreach ($package in @('pdfjs-dist','mammoth','yauzl')) {
+  if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot ('node_modules/' + $package + '/package.json')))) { throw 'Install classroom dependencies first: npm ci --omit=dev --ignore-scripts --workspaces=false' }
+}
 $DataDirectory = [IO.Path]::GetFullPath($DataDirectory)
 New-Item -ItemType Directory -Path $DataDirectory -Force | Out-Null
 if (-not $ConfigPath) { $ConfigPath = Join-Path $DataDirectory 'config.json' }

@@ -1,3 +1,4 @@
+import { validateTeachingPlan } from './planner.mjs'
 import { DatabaseSync } from 'node:sqlite'
 import { randomBytes, createHash, randomUUID } from 'node:crypto'
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
@@ -44,9 +45,52 @@ export class ClassroomStore {
       CREATE TABLE IF NOT EXISTS media(revision INTEGER PRIMARY KEY, status TEXT NOT NULL, detail TEXT NOT NULL, asset TEXT);
     `)
     if (version < 2) this._migrate(dir)
+    this.db.exec("CREATE TABLE IF NOT EXISTS source_documents(id TEXT PRIMARY KEY,class_id TEXT NOT NULL REFERENCES classes(id),hash TEXT NOT NULL,body TEXT NOT NULL,page_count INTEGER NOT NULL,char_count INTEGER NOT NULL,created TEXT NOT NULL,UNIQUE(class_id,hash)); CREATE TABLE IF NOT EXISTS teaching_plans(class_id TEXT PRIMARY KEY REFERENCES classes(id),revision INTEGER NOT NULL CHECK(revision>0),body TEXT NOT NULL,updated TEXT NOT NULL);")
     const bootstrapPath = join(dir, 'bootstrap.json')
     this.bootstrap = existsSync(bootstrapPath) ? JSON.parse(readFileSync(bootstrapPath, 'utf8')) : null
     } catch (error) { this.db.close(); throw error }
+  }
+  _sourceDocument(row) { return {...JSON.parse(row.body),id:row.id,classId:row.class_id,hash:row.hash,pageCount:row.page_count,charCount:row.char_count,createdAt:row.created} }
+  _sourceSummary(row) { const value=this._sourceDocument(row);delete value.pages;return value }
+  listSources(p,classId) { this._actor(p,'teacher');const c=this._class(p,classId);return this.db.prepare('SELECT * FROM source_documents WHERE class_id=? ORDER BY created DESC,id').all(c.id).map(row=>this._sourceSummary(row)) }
+  getSources(p,{classId,sourceIds}) {
+    this._actor(p,'teacher');const c=this._class(p,classId)
+    if(!Array.isArray(sourceIds)||!sourceIds.length||sourceIds.length>3||new Set(sourceIds).size!==sourceIds.length||sourceIds.some(id=>typeof id!=='string'||!/^[a-f0-9-]{36}$/.test(id)))fail('Choose one to three distinct sources.')
+    return sourceIds.map(id=>{const row=this.db.prepare('SELECT * FROM source_documents WHERE id=? AND class_id=?').get(id,c.id);if(!row)fail('Source not found.',404);return this._sourceDocument(row)})
+  }
+  addSource(p,{classId,source}) {
+    this._actor(p,'teacher');const c=this._class(p,classId)
+    if(!source||typeof source.hash!=='string'||!/^[a-f0-9]{64}$/.test(source.hash)||!['pdf','docx','txt','md'].includes(source.format))fail('Invalid extracted source.')
+    for(const [key,max,required]of [['title',160,true],['publisher',160,false],['filename',240,true]])if(typeof source[key]!=='string'||source[key].length>max||(required&&!source[key].trim()))fail('Check source '+key+'.')
+    if(!Array.isArray(source.pages)||!source.pages.length||source.pages.length>60)fail('Invalid source sections.')
+    let charCount=0;const labels=new Set()
+    const pages=source.pages.map(page=>{if(!page||typeof page.text!=='string'||!/^([ps])[1-9][0-9]{0,2}$/.test(page.label)||labels.has(page.label))fail('Invalid source page.');labels.add(page.label);charCount+=page.text.length;return {label:page.label,text:page.text}})
+    if(charCount>90000||!pages.some(p=>p.text.trim()))fail('Source must contain readable text under 90,000 characters.')
+    if(!Array.isArray(source.warnings)||source.warnings.length>20||source.warnings.some(w=>typeof w!=='string'||w.length>500))fail('Invalid source warnings.')
+    const clean={title:source.title,publisher:source.publisher,filename:source.filename,format:source.format,hash:source.hash,pages,warnings:source.warnings}
+    return this._transaction(()=>{
+      const existing=this.db.prepare('SELECT * FROM source_documents WHERE class_id=? AND hash=?').get(c.id,source.hash)
+      if(existing)return {source:this._sourceSummary(existing),duplicate:true}
+      if(this.listSources(p,c.id).length>=24)fail('This class already has 24 sources. Remove an unused source first.',409)
+      const id=randomUUID();this.db.prepare('INSERT INTO source_documents VALUES(?,?,?,?,?,?,?)').run(id,c.id,source.hash,JSON.stringify(clean),pages.length,charCount,this._stamp())
+      this._audit(p.id,'source-added',id,c.id);return {source:this._sourceSummary(this.db.prepare('SELECT * FROM source_documents WHERE id=?').get(id)),duplicate:false}
+    })
+  }
+  teachingPlan(p,classId) { this._actor(p,'teacher');const c=this._class(p,classId),row=this.db.prepare('SELECT * FROM teaching_plans WHERE class_id=?').get(c.id);return {classId:c.id,revision:row?.revision||0,plan:row?JSON.parse(row.body):null,updatedAt:row?.updated||null} }
+  saveTeachingPlan(p,{classId,revision,plan}) {
+    this._actor(p,'teacher');const c=this._class(p,classId)
+    if(!Number.isSafeInteger(revision)||revision<0)fail('Reload the saved teaching plan.')
+    if(plan!==null&&(!plan||typeof plan!=='object'||Array.isArray(plan)))fail('Provide a plan or explicitly clear it.')
+    return this._transaction(()=>{
+      const old=this.teachingPlan(p,c.id);if(old.revision!==revision)fail('This plan changed in another window. Your edits are still here. Download them, then reload the saved plan.',409)
+      const clean=plan===null?null:validateTeachingPlan(plan,this.getSources(p,{classId:c.id,sourceIds:plan.sourceIds}))
+      this.db.prepare('INSERT INTO teaching_plans VALUES(?,?,?,?) ON CONFLICT(class_id) DO UPDATE SET revision=excluded.revision,body=excluded.body,updated=excluded.updated').run(c.id,revision+1,JSON.stringify(clean),this._stamp())
+      this._audit(p.id,plan===null?'teaching-plan-cleared':'teaching-plan-saved',c.id,c.id);return this.teachingPlan(p,c.id)
+    })
+  }
+  deleteSource(p,{classId,id}) {
+    this._actor(p,'teacher');const c=this._class(p,classId)
+    return this._transaction(()=>{this.getSources(p,{classId:c.id,sourceIds:[id]});if(this.teachingPlan(p,c.id).plan?.sourceIds.includes(id))fail('Clear the saved plan before deleting a source it uses.',409);this.db.prepare('DELETE FROM source_documents WHERE id=? AND class_id=?').run(id,c.id);this._audit(p.id,'source-deleted',id,c.id);return {deleted:true}})
   }
   _stamp() { return new Date(this.now()).toISOString() }
   _transaction(fn) {

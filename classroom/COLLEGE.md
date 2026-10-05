@@ -5,6 +5,7 @@ A private course workspace for college instructors and students. It shares the m
 ## Included in this first college edition
 
 - Instructor-owned courses and individual student sign-ins. Enroll an existing student in another course you own without changing their password.
+- [Source Planner](SOURCE-PLANNER.md): PDF/Word/text uploads, reviewed extracts, editable source-based teaching plans and private text exports. Publisher accounts and automatic syllabus scheduling are not connected.
 - Module Studio: course code, module/week, suggested study time, explanation, three narration scenes, assessment and private instructor notes.
 - Up to three instructor-supplied readings with excerpts and optional HTTPS references. Linked pages are not fetched by the model.
 - Introductory statistics lab: twelve explicitly fictional observations, scatterplot, temperature grouping, calculated Pearson correlation, group means and accessible data table. Pooled r is approximately 0.943; within each constructed group it is zero. The activity distinguishes association from causal evidence.
@@ -15,12 +16,13 @@ A private course workspace for college instructors and students. It shares the m
 
 ## Run locally
 
-Requires Node 24.11+. Running the server needs no npm dependencies.
+Requires Node 24.11+. Install the pinned document parsers before startup: npm ci --omit=dev --ignore-scripts --workspaces=false (from classroom/).
 
 Windows:
 
 ~~~powershell
 cd classroom
+npm ci --omit=dev --ignore-scripts --workspaces=false
 .\Start-College.ps1 -InstructorSession
 ~~~
 
@@ -69,4 +71,4 @@ npm run test:college-media --workspaces=false
 
 Tests cover edition/credential isolation, ownership-limited enrollment, validation, HTML escaping, private-field omission, exact dataset calculations and media routing. The browser check covers statistics, edited readings, saved work, help, submission, feedback, two-course enrollment and mobile width.
 
-This working demonstration uses fictional courses and students. No university LMS deployment, automated grading, plagiarism detection or learning-gain evidence is implied. Syllabus/PDF ingestion, institution SSO, gradebooks and LMS synchronization are future work. Narration currently requires Windows. Institution-specific identity, retention/deletion, accessibility evaluation and academic policy work remain before use with real student records.
+This working demonstration uses fictional courses and students. No university LMS deployment, automated grading, plagiarism detection or learning-gain evidence is implied. File ingestion for private teaching plans is available in Source Planner. Automated syllabus scheduling, institution SSO, gradebooks and LMS synchronization are future work. Narration currently requires Windows. Institution-specific identity, retention/deletion, accessibility evaluation and academic policy work remain before use with real student records.

@@ -1,3 +1,4 @@
+import { createPlanner } from './planner.js'
 const root = document.querySelector('#app')
 let edition = 'school'
 const college = () => edition === 'college'
@@ -22,7 +23,9 @@ const notice = (message, error = false) => {
   clearTimeout(notice.timer)
   notice.timer = setTimeout(() => n.classList.remove('visible'), 8000)
 }
+const planner=createPlanner({api,upload:uploadBinary,notice,getClassId:()=>currentClassId,getEdition:()=>edition,runBusy:async task=>{busyOperations++;try{return await task()}finally{busyOperations--}}})
 function forgetSession() {
+  planner.reset()
   token = ''; state = null; selected = ''; currentClassId = ''; working = null; dirty = false; credentials = null
   sessionStorage.removeItem('chalkline-access'); sessionStorage.removeItem('chalkline-expires')
   clearTimeout(mediaTimer); clearTimeout(expiryTimer)
@@ -37,6 +40,17 @@ function scheduleExpiry(expiresAt) {
     captureWork(); forgetSession(); login()
     notice('Your session ended. Sign in again to continue. Any unsent work is still kept in this browser.', true)
   }, Math.max(0, Math.min(ms, 2147483647)))
+}
+async function uploadBinary(path,file){
+  const requestToken=token
+  let response
+  try{response=await fetch('/api/'+path,{method:'POST',headers:{Authorization:'Bearer '+requestToken,'Content-Type':'application/octet-stream'},body:file})}catch{throw Error('Upload interrupted. Your selected file is still here; retry when connected.')}
+  if(token!==requestToken)throw Error('The workspace changed. Reopen Source Planner.')
+  const result=await response.json().catch(()=>({error:'Upload response was interrupted. Retry to check it.'}))
+  if(token!==requestToken)throw Error('The workspace changed. Reopen Source Planner.')
+  if(response.status===401){forgetSession();login()}
+  if(!response.ok||result.error)throw Error(result.error||'Upload failed. Try again.')
+  return result
 }
 async function api(path, data, raw = false) {
   const requestToken = token
@@ -127,7 +141,7 @@ function login() {
 }
 function shell(content) {
   const teacher = state.user.role === 'teacher', classes = state.classes || []
-  const nav = college() ? [['overview', 'Course overview'], ['studio', 'Module Studio'], ['assignments', 'Coursework'], ['insights', 'Questions & support'], ['classmates', 'Courses & enrollment']] : [['overview', 'Classroom'], ['studio', 'Lesson Studio'], ['assignments', 'Assignments'], ['insights', 'Questions & support'], ['classmates', 'Class & people']]
+  const nav = college() ? [['overview', 'Course overview'], ['studio', 'Module Studio'], ['planner', 'Source Planner'], ['assignments', 'Coursework'], ['insights', 'Questions & support'], ['classmates', 'Courses & enrollment']] : [['overview', 'Classroom'], ['studio', 'Lesson Studio'], ['planner', 'Source Planner'], ['assignments', 'Assignments'], ['insights', 'Questions & support'], ['classmates', 'Class & people']]
   const picker = classes.length ? '<label class="class-picker">' + wording('Your class', 'Your course') + '<select id="class-select">' + classes.map(c => '<option value="' + E(c.id) + '" ' + (c.id === currentClassId ? 'selected' : '') + '>' + E(c.name) + '</option>').join('') + '</select></label>' : ''
   root.innerHTML = '<header><div class="brand"><span class="brandmark">c</span>chalkline' + (college() ? ' <small class="college-wordmark">COLLEGE</small>' : '') + ' <span class="pill">' + (teacher ? wording('Teacher', 'Instructor') : 'Student') + '</span></div><div class="identity"><span>' + E(state.user.name) + '</span>' + button('account', 'Account', '', true) + button('logout', 'Sign out', '', true) + '</div></header>' + (teacher ? '<div class="layout"><nav aria-label="Teacher workspace">' + picker + nav.map(([id, label]) => '<button type="button" data-tab="' + id + '" class="' + (tab === id ? 'active' : '') + '" ' + (tab === id ? 'aria-current="page"' : '') + '>' + label + '</button>').join('') + (college() ? '<div class="note"><b>Learning with evidence.</b><br>Explore. Question. Reflect.<br><br><span class="pill">Fictional course demo</span></div></nav><main>' : '<div class="note"><b>Learning, together.</b><br>Reviewed lessons.<br>Questions worth hearing.<br><br><span class="pill">Synthetic classroom</span></div></nav><main>') : '<main class="student-main">' + picker) + content + '</main>' + (teacher ? '</div>' : '')
 }
@@ -562,11 +576,12 @@ async function render() {
   blobs = []
   shell(tab === 'account' ? account() :
     state.user.role === 'teacher'
-      ? ({ overview, studio, assignments, insights, classmates }[tab] || overview)()
+      ? ({ overview, studio, planner:()=>'<div id="source-planner"></div>', assignments, insights, classmates }[tab] || overview)()
       : selected
         ? studentLesson()
         : studentHome()
   )
+  if(state.user.role==='teacher'&&tab==='planner')await planner.mount(document.querySelector('#source-planner'))
   if (tab !== 'account' && state.user.role === 'student' && selected) {
     await showPreview(selected)
     const a = state.assignments.find(a => a.id === selected)
@@ -703,10 +718,10 @@ root.addEventListener('change', async e => {
   if (e.target.id !== 'class-select') return
   const next = e.target.value
   if (busyOperations) { e.target.value = currentClassId; notice('Wait for the current request to finish before switching classes.'); return }
-  if (dirty && !confirm('Leave your unsaved lesson edits and switch classes?')) { e.target.value = currentClassId; return }
+  if ((dirty||planner.isDirty()) && !confirm('Leave your unsaved lesson and plan edits and switch classes?')) { e.target.value = currentClassId; return }
   captureWork()
   const previous = currentClassId; currentClassId = next; busyOperations++; e.target.disabled = true
-  try { await load(); working = null; dirty = false; previewed = 0; selected = ''; credentials = null; await render() }
+  try { await load(); planner.reset(); working = null; dirty = false; previewed = 0; selected = ''; credentials = null; await render() }
   catch (error) { currentClassId = previous; e.target.value = previous; notice(error.message, true) }
   finally { busyOperations--; e.target.disabled = false }
 })
@@ -727,7 +742,7 @@ root.addEventListener('click', async e => {
         try { await navigator.clipboard.writeText(link); notice('Expiring teacher session link copied. Keep it private.') }
         catch { document.querySelector('#desktop-link-result').innerHTML = '<label>Expiring teacher session link<input readonly value="' + E(link) + '"></label>' }
       },
-      logout: async () => { await api('logout', {}); forgetSession(); tab = 'overview'; login() },
+      logout: async () => { if(planner.isDirty()&&!confirm('Sign out and discard unsaved source plan edits?'))return; await api('logout', {}); forgetSession(); tab = 'overview'; login() },
       account: async () => { tab = 'account'; await render() },
       'account-back': async () => { tab = 'overview'; await render() },
       'manage-class': async () => { tab = 'classmates'; await render() },
@@ -845,7 +860,7 @@ root.addEventListener('submit', async e => {
 })
 window.addEventListener('offline', () => { captureWork(); notice('You are offline. Keep this tab open or return later; your typed work is kept in this browser.', true) })
 window.addEventListener('online', () => notice('Connection restored. Save your progress or retry any request that was interrupted.'))
-window.addEventListener('beforeunload', e => { if (dirty) { e.preventDefault(); e.returnValue = '' } })
+window.addEventListener('beforeunload', e => { if (dirty||planner.isDirty()) { e.preventDefault(); e.returnValue = '' } })
 async function start(){const info=await api("info");edition=info.edition||"school";document.body.dataset.edition=edition;document.title=college()?"Chalkline College · Course workspace":"Chalkline · Learn together";if(token){if(!incomingSession)scheduleExpiry(sessionStorage.getItem("chalkline-expires"));await load();await render()}else login()}
 start().catch(error=>{login();notice(error.message,true)})
 
