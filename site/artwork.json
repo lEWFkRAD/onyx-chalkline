@@ -1,0 +1,8 @@
+{
+  "source": "OpenAI built-in imagegen",
+  "kind": "Concept illustration",
+  "sha256": "0c7886cc989684f11deb034628b1e7e8e0e09557ca0cb88f0df561af9d135a42",
+  "prompts": [
+    "Use case: ads-marketing.\nAsset type: finished wide 2:1 GitHub/project website hero banner, 2048x1024 if possible, opaque background.\nCreate a polished warm editorial illustration for \"Onyx Chalkline\", a teacher-led learning workspace where teachers review lessons, learners ask questions, and instructors provide feedback. Depict a carefully arranged teacher's desk from a high three-quarter angle: an open ivory lesson notebook with simple fraction shapes and geometric learning diagrams, a few question cards tucked beside it, a pencil and a restrained hand-drawn review mark, and one elegant framed lesson sheet suggesting an interactive activity without imitating real software. The lesson remains the focal point and teacher review is visible in the objects. No people or student names. All marks are abstract or simple educational shapes, not records or grades.\nSophisticated navy and ivory palette, muted sage and a small warm ochre accent, tactile paper, linen and subtle chalk texture, graceful natural light, clear rounded forms, premium book-cover illustration with ample breathing room.\nTypography integrated prominently and flawlessly: exactly \"ONYX\" on a smaller line and \"CHALKLINE\" as the dominant large title, generous margins and readability at thumbnail size. No tagline.\nNo other legible words, student data, real school logos, grades, fake dashboards, screenshots, claims of school approval, robot characters, watermark, or border. The tone is welcoming, thoughtful and teacher-controlled rather than automated or surveillance-like."
+  ]
+}

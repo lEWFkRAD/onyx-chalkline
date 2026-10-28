@@ -1,3 +1,12 @@
+<!-- project-home:start -->
+![Onyx Chalkline concept banner](site/hero.png)
+
+**[Onyx Chalkline project homepage](https://lewfkrad.github.io/onyx-chalkline/)** · [Documentation](https://github.com/lEWFkRAD/onyx-chalkline/blob/main/classroom/README.md)
+
+Teacher-led workspaces for lessons, learner questions, coursework, and instructor feedback.
+
+<!-- project-home:end -->
+
 # Onyx Chalkline
 
 Chalkline is a teacher-led AI classroom app with a Hermes-based desktop that helps teachers turn lesson ideas into interactive HTML activities, custom narrated videos, and assigned practice. Teachers review and publish lessons, while students use a connected workspace to explore explanations, ask lesson-specific AI questions, complete work, and receive feedback. Teachers can review those questions and replies alongside student submissions to plan follow-up instruction around where learners need support. The connected service supports individual sign-ins, teacher-owned classes, student enrollment, private HTTPS access across devices, and recoverable work with safe retries. Version 0.3 adds Chalkline College: separate course accounts, interactive statistics and close-reading modules, instructor-supplied readings, narrated explanations, and written analysis. Version 0.4 adds a private Source Planner in both editions: import PDF, Word or text teaching material, review the extraction, and draft an editable lesson plan with page/section references, pacing, differentiation, assessment and homework. Both editions use fictional demonstration data; school and university pilots remain future stages.
